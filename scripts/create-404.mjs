@@ -1,5 +1,8 @@
 import { copyFileSync, existsSync } from 'node:fs';
 
-if (existsSync('dist/index.html')) {
-  copyFileSync('dist/index.html', 'dist/404.html');
+const builtIndex = existsSync('dist/index.html') ? 'dist/index.html' : 'dist/app/index.html';
+
+if (existsSync(builtIndex)) {
+  copyFileSync(builtIndex, 'dist/index.html');
+  copyFileSync(builtIndex, 'dist/404.html');
 }
