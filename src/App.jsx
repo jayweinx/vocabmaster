@@ -1426,7 +1426,7 @@ const normalizeAnswer = (text) => String(text || '')
           );
 
           return (
-            <div className="h-[100dvh] w-full flex flex-col md:flex-row overflow-hidden bg-gray-50">
+            <div className="app-shell h-[100dvh] w-full flex flex-col md:flex-row overflow-hidden bg-gray-50">
               <aside className="hidden md:flex flex-col w-72 bg-white border-r shadow-xl z-20 shrink-0">
                 <div className="p-8 bg-indigo-600 text-white text-center">
                   <Languages size={40} className="mx-auto mb-4" />
