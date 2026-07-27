@@ -7,6 +7,6 @@ if (existsSync(builtIndex)) {
   copyFileSync(builtIndex, 'dist/404.html');
 }
 
-if (existsSync('dist/ios/index.html')) {
-  copyFileSync('dist/ios/index.html', 'dist/ios.html');
+if (existsSync('dist/app-ios/index.html')) {
+  copyFileSync('dist/app-ios/index.html', 'dist/ios.html');
 }

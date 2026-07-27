@@ -9,7 +9,7 @@ export default defineConfig({
     rollupOptions: {
       input: {
         index: resolve(__dirname, 'app/index.html'),
-        ios: resolve(__dirname, 'ios/index.html'),
+        ios: resolve(__dirname, 'app-ios/index.html'),
       },
     },
   },
