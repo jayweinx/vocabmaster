@@ -1005,6 +1005,14 @@ const normalizeAnswer = (text) => String(text || '')
             const [showBatchDeleteConfirm, setShowBatchDeleteConfirm] = useState(false);
             const [selectedCategoryFilter, setSelectedCategoryFilter] = useState('All');
             const [showCategoryDeleteConfirm, setShowCategoryDeleteConfirm] = useState(false);
+            const [editingId, setEditingId] = useState(null);
+            const [editDraft, setEditDraft] = useState({
+                word: '',
+                pronunciation: '',
+                mandarin: '',
+                meaning: '',
+                category: 'General'
+            });
             const fileInputRef = useRef(null);
 
             const categories = useMemo(() => {
@@ -1012,7 +1020,56 @@ const normalizeAnswer = (text) => String(text || '')
                 return ['All', ...Array.from(cats)];
             }, [words]);
 
-            const deleteWord = (id) => setWords(words.filter(w => w.id !== id));
+            const deleteWord = (id) => {
+                setWords(words.filter(w => w.id !== id));
+                if (editingId === id) setEditingId(null);
+            };
+
+            const startEdit = (word) => {
+                setEditingId(word.id);
+                setSelectedIds(prev => {
+                    const next = new Set(prev);
+                    next.delete(word.id);
+                    return next;
+                });
+                setEditDraft({
+                    word: word.word || '',
+                    pronunciation: word.pronunciation || '',
+                    mandarin: word.mandarin || '',
+                    meaning: word.meaning || '',
+                    category: word.category || 'General'
+                });
+            };
+
+            const cancelEdit = () => {
+                setEditingId(null);
+                setEditDraft({
+                    word: '',
+                    pronunciation: '',
+                    mandarin: '',
+                    meaning: '',
+                    category: 'General'
+                });
+            };
+
+            const updateEditDraft = (field, value) => {
+                setEditDraft(current => ({ ...current, [field]: value }));
+            };
+
+            const saveEdit = (id) => {
+                const cleaned = {
+                    word: editDraft.word.trim().replace(/\s+/g, ' '),
+                    pronunciation: editDraft.pronunciation.trim(),
+                    mandarin: editDraft.mandarin.trim(),
+                    meaning: editDraft.meaning.trim(),
+                    category: editDraft.category.trim().replace(/\s+/g, ' ') || 'General'
+                };
+
+                if (!cleaned.word || !cleaned.mandarin) return;
+
+                setWords(words.map(w => w.id === id ? { ...w, ...cleaned } : w));
+                cancelEdit();
+            };
 
             const handleDownload = () => {
                 const dataStr = JSON.stringify(words, null, 2);
@@ -1061,7 +1118,11 @@ const normalizeAnswer = (text) => String(text || '')
             };
 
             const filtered = words.filter(w => {
-                const matchSearch = w.word.toLowerCase().includes(search.toLowerCase()) || w.mandarin.includes(search);
+                const normalizedSearch = search.toLowerCase();
+                const matchSearch = (w.word || '').toLowerCase().includes(normalizedSearch)
+                    || (w.mandarin || '').includes(search)
+                    || (w.meaning || '').toLowerCase().includes(normalizedSearch)
+                    || (w.pronunciation || '').toLowerCase().includes(normalizedSearch);
                 const matchCategory = selectedCategoryFilter === 'All' || (w.category || 'General') === selectedCategoryFilter;
                 return matchSearch && matchCategory;
             });
@@ -1074,6 +1135,7 @@ const normalizeAnswer = (text) => String(text || '')
             };
 
             const toggleSelection = (id) => {
+                if (editingId === id) return;
                 const next = new Set(selectedIds);
                 if (next.has(id)) next.delete(id); else next.add(id);
                 setSelectedIds(next);
@@ -1193,23 +1255,102 @@ const normalizeAnswer = (text) => String(text || '')
                             <div className="text-center text-gray-400 py-10 font-bold">No words found.</div>
                         ) : (
                             filtered.map(w => (
-                                <div key={w.id} onClick={() => toggleSelection(w.id)} className={`p-4 bg-white rounded-2xl border flex items-center justify-between group transition-colors cursor-pointer ${selectedIds.has(w.id) ? 'border-indigo-300 ring-1 ring-indigo-300 bg-indigo-50/50' : 'hover:border-indigo-200'}`}>
-                                    <div className="flex items-center gap-4">
-                                        {selectedIds.has(w.id) ? <CheckSquare className="text-indigo-600 shrink-0" size={24} /> : <Square className="text-gray-300 shrink-0" size={24} />}
-                                        <div className="w-10 h-10 bg-indigo-50 text-indigo-500 rounded-full flex items-center justify-center font-bold shrink-0">{w.word[0].toUpperCase()}</div>
-                                        <div>
-                                            <div className="flex items-center gap-2">
-                                                <span className="font-bold text-lg">{w.word}</span>
-                                                <span className="text-xs px-2 py-0.5 bg-gray-100 text-gray-500 rounded-full">{w.category}</span>
+                                <div key={w.id} onClick={() => toggleSelection(w.id)} className={`p-4 bg-white rounded-2xl border group transition-colors ${editingId === w.id ? 'border-indigo-300 ring-1 ring-indigo-300' : `cursor-pointer ${selectedIds.has(w.id) ? 'border-indigo-300 ring-1 ring-indigo-300 bg-indigo-50/50' : 'hover:border-indigo-200'}`}`}>
+                                    {editingId === w.id ? (
+                                        <div className="space-y-3" onClick={(e) => e.stopPropagation()}>
+                                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                                <div>
+                                                    <label className="block text-xs font-bold text-gray-400 uppercase tracking-widest mb-1">English</label>
+                                                    <input
+                                                        value={editDraft.word}
+                                                        onChange={(e) => updateEditDraft('word', e.target.value)}
+                                                        className="w-full p-3 bg-gray-50 rounded-xl border-2 border-transparent focus:border-indigo-500 outline-none font-bold text-gray-800"
+                                                        placeholder="Word"
+                                                        autoFocus
+                                                    />
+                                                </div>
+                                                <div>
+                                                    <label className="block text-xs font-bold text-gray-400 uppercase tracking-widest mb-1">Pronunciation / Reading</label>
+                                                    <input
+                                                        value={editDraft.pronunciation}
+                                                        onChange={(e) => updateEditDraft('pronunciation', e.target.value)}
+                                                        className="w-full p-3 bg-gray-50 rounded-xl border-2 border-transparent focus:border-indigo-500 outline-none text-gray-700"
+                                                        placeholder="Optional"
+                                                    />
+                                                </div>
+                                                <div>
+                                                    <label className="block text-xs font-bold text-gray-400 uppercase tracking-widest mb-1">Mandarin / Answer</label>
+                                                    <input
+                                                        value={editDraft.mandarin}
+                                                        onChange={(e) => updateEditDraft('mandarin', e.target.value)}
+                                                        className="w-full p-3 bg-gray-50 rounded-xl border-2 border-transparent focus:border-indigo-500 outline-none text-gray-700"
+                                                        placeholder="苹果"
+                                                    />
+                                                </div>
+                                                <div>
+                                                    <label className="block text-xs font-bold text-gray-400 uppercase tracking-widest mb-1">Folder</label>
+                                                    <input
+                                                        value={editDraft.category}
+                                                        onChange={(e) => updateEditDraft('category', e.target.value)}
+                                                        list="vocab-categories"
+                                                        className="w-full p-3 bg-gray-50 rounded-xl border-2 border-transparent focus:border-indigo-500 outline-none text-gray-700"
+                                                        placeholder="General"
+                                                    />
+                                                </div>
                                             </div>
-                                            <p className="text-sm text-gray-400">{w.mandarin} • {w.meaning || 'No description'}</p>
+                                            <div>
+                                                <label className="block text-xs font-bold text-gray-400 uppercase tracking-widest mb-1">Meaning / Description</label>
+                                                <input
+                                                    value={editDraft.meaning}
+                                                    onChange={(e) => updateEditDraft('meaning', e.target.value)}
+                                                    className="w-full p-3 bg-gray-50 rounded-xl border-2 border-transparent focus:border-indigo-500 outline-none text-gray-700"
+                                                    placeholder="Optional description, e.g. red fruit"
+                                                />
+                                            </div>
+                                            <div className="flex justify-end gap-2">
+                                                <button onClick={cancelEdit} className="flex items-center justify-center gap-2 px-4 py-2 bg-gray-100 text-gray-600 rounded-lg font-bold hover:bg-gray-200 transition-colors">
+                                                    <X size={16} /> Cancel
+                                                </button>
+                                                <button
+                                                    onClick={() => saveEdit(w.id)}
+                                                    disabled={!editDraft.word.trim() || !editDraft.mandarin.trim()}
+                                                    className="flex items-center justify-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg font-bold hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                                                >
+                                                    <Save size={16} /> Save
+                                                </button>
+                                            </div>
                                         </div>
-                                    </div>
-                                    <button onClick={(e) => { e.stopPropagation(); deleteWord(w.id); }} className="p-2 text-red-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all shrink-0"><Trash2 size={20}/></button>
+                                    ) : (
+                                        <div className="flex items-center justify-between gap-3">
+                                            <div className="flex items-center gap-4 min-w-0">
+                                                {selectedIds.has(w.id) ? <CheckSquare className="text-indigo-600 shrink-0" size={24} /> : <Square className="text-gray-300 shrink-0" size={24} />}
+                                                <div className="w-10 h-10 bg-indigo-50 text-indigo-500 rounded-full flex items-center justify-center font-bold shrink-0">{(w.word || '?')[0].toUpperCase()}</div>
+                                                <div className="min-w-0">
+                                                    <div className="flex items-center gap-2">
+                                                        <span className="font-bold text-lg truncate">{w.word}</span>
+                                                        <span className="text-xs px-2 py-0.5 bg-gray-100 text-gray-500 rounded-full shrink-0">{w.category || 'General'}</span>
+                                                    </div>
+                                                    <p className="text-sm text-gray-400 truncate">{w.mandarin} • {w.meaning || 'No description'}</p>
+                                                    {w.pronunciation && <p className="text-xs text-gray-300 truncate">/{w.pronunciation}/</p>}
+                                                </div>
+                                            </div>
+                                            <div className="flex items-center gap-1 shrink-0">
+                                                <button onClick={(e) => { e.stopPropagation(); startEdit(w); }} className="p-2 text-indigo-300 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all shrink-0" title="Edit word">
+                                                    <Edit2 size={20}/>
+                                                </button>
+                                                <button onClick={(e) => { e.stopPropagation(); deleteWord(w.id); }} className="p-2 text-red-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all shrink-0" title="Delete word">
+                                                    <Trash2 size={20}/>
+                                                </button>
+                                            </div>
+                                        </div>
+                                    )}
                                 </div>
                             ))
                         )}
                     </div>
+                    <datalist id="vocab-categories">
+                        {categories.filter(c => c !== 'All').map(c => <option key={c} value={c} />)}
+                    </datalist>
                 </div>
             );
         }
