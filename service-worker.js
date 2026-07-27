@@ -1,6 +1,13 @@
-const CACHE_NAME = 'vocab-master-pwa-v2';
+const CACHE_NAME = 'vocab-master-pwa-v3';
 const APP_SHELL = './index.html';
-const LOCAL_ASSETS = ['./', './index.html', './manifest.json', './icons/icon.svg'];
+const LOCAL_ASSETS = [
+  './',
+  './index.html',
+  './manifest.json',
+  './icons/icon-192.png',
+  './icons/icon-512.png',
+  './icons/icon.svg'
+];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
