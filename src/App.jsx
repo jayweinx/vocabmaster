@@ -1321,7 +1321,7 @@ const normalizeAnswer = (text) => String(text || '')
                                             </div>
                                         </div>
                                     ) : (
-                                        <div className="flex items-center justify-between gap-3">
+                                        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                                             <div className="flex items-center gap-4 min-w-0">
                                                 {selectedIds.has(w.id) ? <CheckSquare className="text-indigo-600 shrink-0" size={24} /> : <Square className="text-gray-300 shrink-0" size={24} />}
                                                 <div className="w-10 h-10 bg-indigo-50 text-indigo-500 rounded-full flex items-center justify-center font-bold shrink-0">{(w.word || '?')[0].toUpperCase()}</div>
@@ -1334,12 +1334,12 @@ const normalizeAnswer = (text) => String(text || '')
                                                     {w.pronunciation && <p className="text-xs text-gray-300 truncate">/{w.pronunciation}/</p>}
                                                 </div>
                                             </div>
-                                            <div className="flex items-center gap-1 shrink-0">
-                                                <button onClick={(e) => { e.stopPropagation(); startEdit(w); }} className="p-2 text-indigo-300 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all shrink-0" title="Edit word">
-                                                    <Edit2 size={20}/>
+                                            <div className="flex items-center justify-end gap-2 shrink-0 border-t border-gray-100 pt-3 sm:border-t-0 sm:pt-0">
+                                                <button onClick={(e) => { e.stopPropagation(); startEdit(w); }} className="flex items-center gap-2 px-3 py-2 text-indigo-600 bg-indigo-50 hover:bg-indigo-100 rounded-lg transition-all shrink-0 font-bold text-sm" title="Edit word">
+                                                    <Edit2 size={18}/> Edit
                                                 </button>
-                                                <button onClick={(e) => { e.stopPropagation(); deleteWord(w.id); }} className="p-2 text-red-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all shrink-0" title="Delete word">
-                                                    <Trash2 size={20}/>
+                                                <button onClick={(e) => { e.stopPropagation(); deleteWord(w.id); }} className="flex items-center gap-2 px-3 py-2 text-red-500 bg-red-50 hover:bg-red-100 rounded-lg transition-all shrink-0 font-bold text-sm" title="Delete word">
+                                                    <Trash2 size={18}/> Delete
                                                 </button>
                                             </div>
                                         </div>
