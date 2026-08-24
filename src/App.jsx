@@ -104,51 +104,184 @@ const normalizeAnswer = (text) => String(text || '')
           return `${mins}:${secs.toString().padStart(2, '0')}`;
         };
 
+        const hasChineseText = (text) => /[\u3400-\u9fff]/.test(String(text || ''));
+        const cleanCellText = (text) => String(text || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+        const normalizeWordKey = (text) => cleanCellText(text).toLowerCase();
+        const normalizeCategoryKey = (text) => cleanCellText(text || 'General').toLowerCase();
+        const makeImportKey = (word, category) => `${normalizeCategoryKey(category)}::${normalizeWordKey(word)}`;
+
+        const stripLinePrefix = (line) => cleanCellText(line)
+            .replace(/^[•●▪▫◦*]\s*/, '')
+            .replace(/^\(?\d+[\s\.)、:-]+/, '')
+            .replace(/^[a-zA-Z][\s\.)、:-]+(?=\S)/, '')
+            .replace(/^[\-–—]\s+/, '')
+            .trim();
+
+        const detectHeading = (line) => {
+            const text = cleanCellText(line).replace(/[:：]+$/, '');
+            const match = text.match(/^(form|english|unit|chapter|part|question|section|exercise|set)\s*([A-Za-z0-9\-]+)?$/i);
+            if (!match) return null;
+            const label = match[1].toLowerCase();
+            const value = text;
+            if (label === 'unit' || label === 'chapter') return { type: 'unit', value };
+            if (label === 'part') return { type: 'part', value };
+            if (label === 'question') return { type: 'question', value };
+            return { type: 'section', value };
+        };
+
+        const splitChineseTail = (text) => {
+            const match = String(text || '').match(/^(.*?)([\u3400-\u9fff][\u3400-\u9fff0-9A-Za-z\s；;，,、。.\-–—()（）\/]*)$/);
+            if (!match) return { before: cleanCellText(text), mandarin: '' };
+            return { before: cleanCellText(match[1]), mandarin: cleanCellText(match[2]) };
+        };
+
+        const buildPreviewItem = (draft, lineNumber, rawSource, context, fallbackCategory) => {
+            const item = {
+                id: `preview-${lineNumber}-${Math.random().toString(36).slice(2)}`,
+                lineNumber,
+                rawSource,
+                word: cleanCellText(draft.word),
+                pronunciation: cleanCellText(draft.pronunciation).replace(/^\/|\/$/g, ''),
+                meaning: cleanCellText(draft.meaning),
+                mandarin: cleanCellText(draft.mandarin),
+                category: cleanCellText(draft.category || context.unit || fallbackCategory || 'General'),
+                section: cleanCellText(context.section),
+                part: cleanCellText(context.part),
+                question: cleanCellText(context.question),
+                ignored: false
+            };
+            return item;
+        };
+
+        const parseVocabularyLine = (line, lineNumber, context, fallbackCategory) => {
+            const rawSource = line;
+            let text = stripLinePrefix(line);
+            if (!text) return null;
+            if (detectHeading(text)) return null;
+
+            let pronunciation = '';
+            const pronMatch = text.match(/\/([^/]+)\//);
+            if (pronMatch) {
+                pronunciation = pronMatch[1];
+                text = cleanCellText(text.replace(pronMatch[0], ' '));
+            }
+
+            let meaning = '';
+            const meaningMatch = text.match(/\[([^\]]+)\]/);
+            if (meaningMatch) {
+                meaning = meaningMatch[1];
+                text = cleanCellText(text.replace(meaningMatch[0], ' '));
+            }
+
+            if (text.includes('|')) {
+                const parts = text.split('|').map(cleanCellText).filter(Boolean);
+                if (parts.length >= 2) {
+                    const chinesePart = parts.find(hasChineseText) || '';
+                    const word = parts[0];
+                    const nonChinese = parts.slice(1).filter(p => p !== chinesePart);
+                    return buildPreviewItem({
+                        word,
+                        pronunciation,
+                        meaning: meaning || nonChinese.join(' '),
+                        mandarin: chinesePart || (hasChineseText(parts[parts.length - 1]) ? parts[parts.length - 1] : '')
+                    }, lineNumber, rawSource, context, fallbackCategory);
+                }
+            }
+
+            if (/\t/.test(rawSource) || /\s{2,}/.test(rawSource)) {
+                const parts = rawSource.split(/\t+|\s{2,}/).map(part => stripLinePrefix(part)).filter(Boolean);
+                if (parts.length >= 2) {
+                    const word = parts[0];
+                    const chinesePart = parts.find((part, index) => index > 0 && hasChineseText(part)) || '';
+                    const meaningParts = parts.slice(1).filter(part => part !== chinesePart && !/^\/[^/]+\/$/.test(part));
+                    return buildPreviewItem({
+                        word,
+                        pronunciation,
+                        meaning: meaning || meaningParts.join(' '),
+                        mandarin: chinesePart
+                    }, lineNumber, rawSource, context, fallbackCategory);
+                }
+            }
+
+            const dashMatch = text.match(/^(.+?)\s+[-–—]\s+(.+)$/);
+            if (dashMatch && hasChineseText(dashMatch[2])) {
+                return buildPreviewItem({
+                    word: dashMatch[1],
+                    pronunciation,
+                    meaning,
+                    mandarin: dashMatch[2]
+                }, lineNumber, rawSource, context, fallbackCategory);
+            }
+
+            const { before, mandarin } = splitChineseTail(text);
+            if (before && mandarin) {
+                return buildPreviewItem({
+                    word: before,
+                    pronunciation,
+                    meaning,
+                    mandarin
+                }, lineNumber, rawSource, context, fallbackCategory);
+            }
+
+            if (/^[A-Za-z][A-Za-z0-9\s'\-]+$/.test(text) && text.split(/\s+/).length <= 4) {
+                return buildPreviewItem({
+                    word: text,
+                    pronunciation,
+                    meaning,
+                    mandarin: ''
+                }, lineNumber, rawSource, context, fallbackCategory);
+            }
+
+            return null;
+        };
+
+        const evaluateImportStatus = (item, existingWords = [], duplicateAction = 'skip') => {
+            if (item.ignored) return { status: 'Ignored', tone: 'gray', message: 'Ignored' };
+            if (!cleanCellText(item.word)) return { status: 'Error', tone: 'red', message: 'Missing word' };
+            if (!/^[A-Za-z][A-Za-z0-9\s'\-]+$/.test(cleanCellText(item.word))) return { status: 'Error', tone: 'red', message: 'Check word' };
+            const duplicate = existingWords.find(word => makeImportKey(word.word, word.category) === makeImportKey(item.word, item.category));
+            if (duplicate) return { status: 'Duplicate', tone: 'amber', message: duplicateAction === 'skip' ? 'Will skip existing' : duplicateAction === 'update' ? 'Will update existing' : 'Will keep both' };
+            const warnings = [];
+            if (!cleanCellText(item.meaning)) warnings.push('Missing meaning');
+            if (!cleanCellText(item.mandarin)) warnings.push('Missing Mandarin');
+            if (!cleanCellText(item.pronunciation)) warnings.push('No pronunciation');
+            if (warnings.length) return { status: 'Warning', tone: 'yellow', message: warnings.join(', ') };
+            return { status: 'Ready', tone: 'emerald', message: 'Ready' };
+        };
+
         const parseVocabularyInput = (inputText, category = 'General') => {
-            const lines = inputText.split('\n').filter(l => l.trim().length > 0);
-            return lines.map((line, index) => {
-                let text = line.trim();
-                text = text.replace(/^\d+[\s\.)]+\s*/, '');
+            const rawLines = String(inputText || '').split(/\r?\n/);
+            const context = { section: '', unit: '', part: '', question: '' };
+            const items = [];
+            const headings = [];
+            const unrecognised = [];
 
-                let word = '';
-                let meaning = '';
-                let pronunciation = '';
-                let mandarin = '';
-
-                const meaningMatch = text.match(/\[(.*?)\]/);
-                if (meaningMatch) {
-                    meaning = meaningMatch[1].trim();
-                    text = text.replace(/\[.*?\]/, '§meaning§');
+            rawLines.forEach((rawLine, index) => {
+                const lineNumber = index + 1;
+                const cleaned = cleanCellText(rawLine);
+                if (!cleaned) return;
+                const heading = detectHeading(cleaned);
+                if (heading) {
+                    context[heading.type] = heading.value;
+                    if (heading.type === 'unit') context.question = '';
+                    if (heading.type === 'part') context.question = '';
+                    headings.push({ lineNumber, text: cleaned, ...heading });
+                    return;
                 }
-
-                const pronMatch = text.match(/\/(.*?)\//);
-                if (pronMatch) {
-                    pronunciation = pronMatch[1].trim();
-                    text = text.replace(/\/.*?\//, '§pron§');
-                }
-
-                let segments = text.split(/\s+/).filter(Boolean);
-                const mandarinRegex = /[\u4e00-\u9fa5]+/;
-                const mandarinIndex = segments.findIndex(seg => mandarinRegex.test(seg));
-
-                if (mandarinIndex !== -1) {
-                    word = segments.slice(0, mandarinIndex).filter(s => !s.includes('§')).join(' ');
-                    mandarin = segments.slice(mandarinIndex).join(' ');
+                const item = parseVocabularyLine(rawLine, lineNumber, context, category);
+                if (item) {
+                    items.push(item);
                 } else {
-                    word = segments[0] || '';
-                    mandarin = segments.slice(1).filter(s => !s.includes('§')).join(' ');
+                    unrecognised.push({ id: `unrecognised-${lineNumber}`, lineNumber, text: rawLine });
                 }
+            });
 
-                return {
-                    id: Date.now() + index + Math.random(),
-                    word: word.trim(),
-                    meaning: meaning.trim(),
-                    pronunciation: pronunciation.trim(),
-                    mandarin: mandarin.trim(),
-                    category: category,
-                    createdAt: new Date().toISOString()
-                };
-            }).filter(item => item.word && item.mandarin);
+            return {
+                items,
+                headings,
+                unrecognised,
+                totalLines: rawLines.filter(line => cleanCellText(line)).length
+            };
         };
 
         function CategorySelectionScreen({ words, onSelect, title }) {
@@ -953,45 +1086,379 @@ const normalizeAnswer = (text) => String(text || '')
         function AddMode({ words, setWords, setActiveTab }) {
             const [inputText, setInputText] = useState('');
             const [category, setCategory] = useState('Unit 1');
+            const [analysis, setAnalysis] = useState(null);
             const [preview, setPreview] = useState([]);
+            const [selectedPreviewIds, setSelectedPreviewIds] = useState(new Set());
+            const [bulkCategory, setBulkCategory] = useState('');
+            const [duplicateAction, setDuplicateAction] = useState('skip');
+            const [importResult, setImportResult] = useState(null);
+            const fileInputRef = useRef(null);
+
+            const previewStatuses = useMemo(() => preview.map(item => ({
+                id: item.id,
+                ...evaluateImportStatus(item, words, duplicateAction)
+            })), [preview, words, duplicateAction]);
+
+            const statusById = useMemo(() => {
+                const map = new Map();
+                previewStatuses.forEach(status => map.set(status.id, status));
+                return map;
+            }, [previewStatuses]);
+
+            const summary = useMemo(() => {
+                const base = { Ready: 0, Warning: 0, Duplicate: 0, Error: 0, Ignored: 0 };
+                previewStatuses.forEach(status => { base[status.status] = (base[status.status] || 0) + 1; });
+                return base;
+            }, [previewStatuses]);
+
+            const importableCount = preview.filter(item => {
+                const status = statusById.get(item.id);
+                return status && !['Error', 'Ignored'].includes(status.status) && !(status.status === 'Duplicate' && duplicateAction === 'skip');
+            }).length;
+
+            const existingCategories = useMemo(() => {
+                const cats = new Set(words.map(w => w.category || 'General'));
+                preview.forEach(item => { if (item.category) cats.add(item.category); });
+                return Array.from(cats).sort();
+            }, [words, preview]);
 
             const handleParse = () => {
                 const parsed = parseVocabularyInput(inputText, category);
-                setPreview(parsed);
+                setAnalysis(parsed);
+                setPreview(parsed.items);
+                setSelectedPreviewIds(new Set());
+                setImportResult(null);
             };
 
-            const saveWords = () => {
-                setWords(prev => [...prev, ...preview]);
-                setActiveTab('study');
+            const handleJsonFileChange = (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    try {
+                        const parsed = JSON.parse(event.target.result);
+                        if (!Array.isArray(parsed)) throw new Error('Backup file must be an array.');
+                        const items = parsed.map((item, index) => ({
+                            id: `json-preview-${index}-${Math.random().toString(36).slice(2)}`,
+                            lineNumber: index + 1,
+                            rawSource: JSON.stringify(item),
+                            word: cleanCellText(item.word),
+                            pronunciation: cleanCellText(item.pronunciation),
+                            meaning: cleanCellText(item.meaning),
+                            mandarin: cleanCellText(item.mandarin),
+                            category: cleanCellText(item.category || category || 'General'),
+                            section: cleanCellText(item.section),
+                            part: cleanCellText(item.part),
+                            question: cleanCellText(item.question),
+                            ignored: false
+                        })).filter(item => item.word || item.mandarin || item.meaning);
+                        setAnalysis({ items, headings: [], unrecognised: [], totalLines: parsed.length, source: 'json' });
+                        setPreview(items);
+                        setSelectedPreviewIds(new Set());
+                        setImportResult(null);
+                    } catch (error) {
+                        setAnalysis({ items: [], headings: [], unrecognised: [{ id: 'json-error', lineNumber: 1, text: 'Invalid JSON backup file.' }], totalLines: 1, source: 'json' });
+                        setPreview([]);
+                    }
+                    e.target.value = '';
+                };
+                reader.readAsText(file);
+            };
+
+            const updatePreviewItem = (id, field, value) => {
+                setPreview(current => current.map(item => item.id === id ? { ...item, [field]: value } : item));
+            };
+
+            const togglePreviewSelection = (id) => {
+                setSelectedPreviewIds(prev => {
+                    const next = new Set(prev);
+                    if (next.has(id)) next.delete(id); else next.add(id);
+                    return next;
+                });
+            };
+
+            const selectAllPreview = () => {
+                const visibleIds = preview.map(item => item.id);
+                setSelectedPreviewIds(prev => prev.size === visibleIds.length ? new Set() : new Set(visibleIds));
+            };
+
+            const applyBulkCategory = () => {
+                const nextCategory = cleanCellText(bulkCategory);
+                if (!nextCategory || selectedPreviewIds.size === 0) return;
+                setPreview(current => current.map(item => selectedPreviewIds.has(item.id) ? { ...item, category: nextCategory } : item));
+            };
+
+            const ignoreSelected = () => {
+                setPreview(current => current.map(item => selectedPreviewIds.has(item.id) ? { ...item, ignored: true } : item));
+                setSelectedPreviewIds(new Set());
+            };
+
+            const deleteSelected = () => {
+                setPreview(current => current.filter(item => !selectedPreviewIds.has(item.id)));
+                setSelectedPreviewIds(new Set());
+            };
+
+            const clearPronunciationSelected = () => {
+                setPreview(current => current.map(item => selectedPreviewIds.has(item.id) ? { ...item, pronunciation: '' } : item));
+            };
+
+            const restoreIgnored = (id) => {
+                setPreview(current => current.map(item => item.id === id ? { ...item, ignored: false } : item));
+            };
+
+            const createWordFromPreview = (item, batchId) => ({
+                id: Date.now() + Math.random(),
+                word: cleanCellText(item.word),
+                meaning: cleanCellText(item.meaning),
+                pronunciation: cleanCellText(item.pronunciation),
+                mandarin: cleanCellText(item.mandarin),
+                category: cleanCellText(item.category || 'General'),
+                section: cleanCellText(item.section),
+                part: cleanCellText(item.part),
+                question: cleanCellText(item.question),
+                rawSource: item.rawSource || '',
+                importBatchId: batchId,
+                createdAt: new Date().toISOString()
+            });
+
+            const importPreviewItems = () => {
+                const batchId = `batch-${Date.now()}`;
+                const previousWords = words;
+                let importedCount = 0;
+                let updatedCount = 0;
+                let skippedCount = 0;
+
+                const nextWords = [...words];
+                preview.forEach(item => {
+                    const status = evaluateImportStatus(item, nextWords, duplicateAction).status;
+                    if (['Error', 'Ignored'].includes(status)) return;
+                    const existingIndex = nextWords.findIndex(word => makeImportKey(word.word, word.category) === makeImportKey(item.word, item.category));
+                    if (existingIndex !== -1 && duplicateAction === 'skip') {
+                        skippedCount += 1;
+                        return;
+                    }
+                    if (existingIndex !== -1 && duplicateAction === 'update') {
+                        nextWords[existingIndex] = {
+                            ...nextWords[existingIndex],
+                            word: cleanCellText(item.word),
+                            meaning: cleanCellText(item.meaning),
+                            pronunciation: cleanCellText(item.pronunciation),
+                            mandarin: cleanCellText(item.mandarin),
+                            category: cleanCellText(item.category || 'General'),
+                            section: cleanCellText(item.section),
+                            part: cleanCellText(item.part),
+                            question: cleanCellText(item.question),
+                            rawSource: item.rawSource || nextWords[existingIndex].rawSource || '',
+                            updatedAt: new Date().toISOString()
+                        };
+                        updatedCount += 1;
+                        return;
+                    }
+                    nextWords.push(createWordFromPreview(item, batchId));
+                    importedCount += 1;
+                });
+
+                setWords(nextWords);
+                setImportResult({ importedCount, updatedCount, skippedCount, batchId, previousWords });
+                setPreview([]);
+                setAnalysis(null);
+                setSelectedPreviewIds(new Set());
+            };
+
+            const undoLastImport = () => {
+                if (!importResult?.previousWords) return;
+                setWords(importResult.previousWords);
+                setImportResult(null);
+            };
+
+            const statusClasses = {
+                Ready: 'bg-emerald-50 text-emerald-700 border-emerald-100',
+                Warning: 'bg-yellow-50 text-yellow-700 border-yellow-100',
+                Duplicate: 'bg-amber-50 text-amber-700 border-amber-100',
+                Error: 'bg-red-50 text-red-700 border-red-100',
+                Ignored: 'bg-gray-100 text-gray-500 border-gray-200'
             };
 
             return (
-                <div className="h-full flex flex-col p-6 max-w-4xl mx-auto w-full overflow-y-auto custom-scrollbar">
-                    <h2 className="text-3xl font-black text-gray-800 mb-6">Teacher Input</h2>
-                    <div className="bg-white p-6 rounded-3xl shadow-sm border mb-6">
-                        <label className="block text-sm font-bold text-gray-400 uppercase tracking-widest mb-2">Category Name</label>
-                        <input value={category} onChange={e => setCategory(e.target.value)} className="w-full p-4 bg-gray-50 rounded-2xl border-2 border-transparent focus:border-indigo-500 outline-none mb-4 font-bold" placeholder="e.g. Chapter 5: Environment" />
-                        
-                        <label className="block text-sm font-bold text-gray-400 uppercase tracking-widest mb-2">Paste Vocabulary Here</label>
-                        <p className="text-xs text-gray-400 mb-2">Formats accepted: "1. word [meaning] mandarin" or "word /pron/ mandarin"</p>
-                        <textarea value={inputText} onChange={e => setInputText(e.target.value)} className="w-full h-48 p-4 bg-gray-50 rounded-2xl border-2 border-transparent focus:border-indigo-500 outline-none font-mono mb-4" placeholder="1. apple [red fruit] 苹果&#10;2. banana /bəˈnɑːnə/ 香蕉" />
-                        <button onClick={handleParse} className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold shadow-lg">Preview Data</button>
+                <div className="h-full flex flex-col p-4 md:p-6 max-w-6xl mx-auto w-full overflow-y-auto custom-scrollbar">
+                    <h2 className="text-3xl font-black text-gray-800 mb-2">Import Vocabulary</h2>
+                    <p className="text-sm text-gray-400 font-medium mb-6">Paste, analyse, edit problems, then import only the valid vocabulary.</p>
+
+                    {importResult && (
+                        <div className="bg-emerald-50 border-2 border-emerald-100 rounded-3xl p-5 mb-6">
+                            <h3 className="text-xl font-black text-emerald-800 mb-1">{importResult.importedCount + importResult.updatedCount} vocabulary items imported successfully.</h3>
+                            <p className="text-sm text-emerald-700 mb-4">{importResult.importedCount} new, {importResult.updatedCount} updated, {importResult.skippedCount} skipped.</p>
+                            <div className="flex flex-wrap gap-3">
+                                <button onClick={undoLastImport} className="px-4 py-3 bg-white border-2 border-emerald-200 text-emerald-700 rounded-xl font-bold hover:bg-emerald-100 transition-colors">Undo Last Import</button>
+                                <button onClick={() => setActiveTab('study')} className="px-4 py-3 bg-emerald-600 text-white rounded-xl font-bold shadow-sm hover:bg-emerald-700 transition-colors">Done</button>
+                            </div>
+                        </div>
+                    )}
+
+                    <div className="grid grid-cols-1 lg:grid-cols-[1.1fr_0.9fr] gap-5 mb-6">
+                        <div className="bg-white p-5 md:p-6 rounded-3xl shadow-sm border">
+                            <div className="flex items-center gap-3 mb-4">
+                                <div className="w-11 h-11 bg-indigo-100 text-indigo-600 rounded-2xl flex items-center justify-center"><Plus size={22} /></div>
+                                <div>
+                                    <h3 className="text-xl font-black text-gray-800">Smart Paste</h3>
+                                    <p className="text-xs text-gray-400 font-bold">From ChatGPT, notes, documents, or spreadsheet rows</p>
+                                </div>
+                            </div>
+                            <label className="block text-sm font-bold text-gray-400 uppercase tracking-widest mb-2">Import into</label>
+                            <input value={category} onChange={e => setCategory(e.target.value)} list="import-category-options" className="w-full p-4 bg-gray-50 rounded-2xl border-2 border-transparent focus:border-indigo-500 outline-none mb-4 font-bold" placeholder="e.g. Form 2 Unit 6" />
+                            <datalist id="import-category-options">
+                                {existingCategories.map(cat => <option key={cat} value={cat} />)}
+                            </datalist>
+
+                            <label className="block text-sm font-bold text-gray-400 uppercase tracking-widest mb-2">Paste Vocabulary Here</label>
+                            <p className="text-xs text-gray-400 mb-2">Supports brackets, pronunciation, pipes, dashes, numbered lists, Unit / Part / Question headings, and spreadsheet copy-paste.</p>
+                            <textarea value={inputText} onChange={e => setInputText(e.target.value)} className="w-full h-56 p-4 bg-gray-50 rounded-2xl border-2 border-transparent focus:border-indigo-500 outline-none font-mono mb-4 text-sm" placeholder={"Unit 3\n\nQuestion 1\n1. encourage /ɪnˈkʌrɪdʒ/ [to motivate] 鼓励\n2. participate | to take part | 参加"} />
+                            <button onClick={handleParse} className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold shadow-lg hover:bg-indigo-700 transition-colors">Analyse Vocabulary</button>
+                        </div>
+
+                        <div className="bg-white p-5 md:p-6 rounded-3xl shadow-sm border">
+                            <div className="flex items-center gap-3 mb-4">
+                                <div className="w-11 h-11 bg-emerald-100 text-emerald-600 rounded-2xl flex items-center justify-center"><Upload size={22} /></div>
+                                <div>
+                                    <h3 className="text-xl font-black text-gray-800">JSON Backup</h3>
+                                    <p className="text-xs text-gray-400 font-bold">Restore or merge an exported backup safely</p>
+                                </div>
+                            </div>
+                            <p className="text-sm text-gray-500 mb-5">JSON backup import now opens the same duplicate-checking preview before anything is written into your collection.</p>
+                            <input type="file" accept=".json" ref={fileInputRef} onChange={handleJsonFileChange} className="hidden" />
+                            <button onClick={() => fileInputRef.current.click()} className="w-full py-4 bg-white border-2 border-emerald-100 text-emerald-600 rounded-2xl font-bold hover:bg-emerald-50 transition-colors">
+                                Choose JSON File
+                            </button>
+                        </div>
                     </div>
 
-                    {preview.length > 0 && (
-                        <div className="bg-indigo-50 rounded-3xl p-6 border-2 border-indigo-100">
-                            <h3 className="font-bold text-indigo-900 mb-4">Detected {preview.length} Words:</h3>
-                            <div className="space-y-2 mb-6">
-                                {preview.map((p, i) => (
-                                    <div key={i} className="flex gap-4 items-center bg-white p-3 rounded-xl text-sm">
-                                        <span className="font-black text-indigo-300">#{i+1}</span>
-                                        <span className="font-bold">{p.word}</span>
-                                        <span className="text-gray-400">/ {p.pronunciation} /</span>
-                                        <span className="text-indigo-600 font-bold">{p.mandarin}</span>
-                                    </div>
-                                ))}
+                    {analysis && (
+                        <div className="bg-indigo-50 rounded-3xl p-4 md:p-6 border-2 border-indigo-100 mb-6">
+                            <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 mb-5">
+                                <div>
+                                    <h3 className="text-2xl font-black text-indigo-950">{preview.length} vocabulary items detected</h3>
+                                    <p className="text-sm text-indigo-700 font-medium">{analysis.totalLines} lines processed, {analysis.headings.length} headings detected, {analysis.unrecognised.length} unrecognised lines.</p>
+                                </div>
+                                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-sm">
+                                    {['Ready', 'Warning', 'Duplicate', 'Error', 'Ignored'].map(label => (
+                                        <div key={label} className={`px-3 py-2 rounded-xl border font-black text-center ${statusClasses[label]}`}>
+                                            {summary[label] || 0} {label}
+                                        </div>
+                                    ))}
+                                </div>
                             </div>
-                            <button onClick={saveWords} className="w-full py-4 bg-emerald-500 text-white rounded-2xl font-bold shadow-lg">Import All to Collection</button>
+
+                            {summary.Duplicate > 0 && (
+                                <div className="bg-white border border-amber-100 rounded-2xl p-4 mb-4">
+                                    <h4 className="font-black text-amber-800 mb-2">Existing word detected</h4>
+                                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                                        {[
+                                            ['skip', 'Skip existing'],
+                                            ['update', 'Update existing'],
+                                            ['keep', 'Keep both']
+                                        ].map(([value, label]) => (
+                                            <button key={value} onClick={() => setDuplicateAction(value)} className={`py-3 rounded-xl font-bold border-2 transition-colors ${duplicateAction === value ? 'bg-amber-500 border-amber-500 text-white' : 'bg-white border-amber-100 text-amber-700 hover:bg-amber-50'}`}>
+                                                {label}
+                                            </button>
+                                        ))}
+                                    </div>
+                                    <p className="text-xs text-amber-600 mt-2 font-bold">This choice applies to all duplicate rows. Default is Skip existing.</p>
+                                </div>
+                            )}
+
+                            {preview.length > 0 && (
+                                <div className="bg-white rounded-2xl border border-indigo-100 p-3 mb-4">
+                                    <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+                                        <div className="flex flex-wrap items-center gap-2">
+                                            <button onClick={selectAllPreview} className="px-3 py-2 rounded-lg bg-gray-100 text-gray-700 font-bold hover:bg-gray-200 transition-colors">
+                                                {selectedPreviewIds.size === preview.length ? 'Clear Selection' : 'Select All'}
+                                            </button>
+                                            <span className="text-sm text-gray-400 font-bold">{selectedPreviewIds.size} selected</span>
+                                        </div>
+                                        <div className="flex flex-wrap gap-2">
+                                            <input value={bulkCategory} onChange={e => setBulkCategory(e.target.value)} className="px-3 py-2 bg-gray-50 rounded-lg border-2 border-transparent focus:border-indigo-500 outline-none text-sm font-bold" placeholder="Move to folder..." />
+                                            <button onClick={applyBulkCategory} className="px-3 py-2 rounded-lg bg-indigo-50 text-indigo-600 font-bold hover:bg-indigo-100 transition-colors">Set Category</button>
+                                            <button onClick={clearPronunciationSelected} className="px-3 py-2 rounded-lg bg-gray-50 text-gray-600 font-bold hover:bg-gray-100 transition-colors">Clear Pronunciation</button>
+                                            <button onClick={ignoreSelected} className="px-3 py-2 rounded-lg bg-yellow-50 text-yellow-700 font-bold hover:bg-yellow-100 transition-colors">Ignore Selected</button>
+                                            <button onClick={deleteSelected} className="px-3 py-2 rounded-lg bg-red-50 text-red-600 font-bold hover:bg-red-100 transition-colors">Delete Selected</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
+                            <div className="overflow-x-auto custom-scrollbar bg-white rounded-2xl border border-indigo-100">
+                                <table className="w-full min-w-[980px] text-sm">
+                                    <thead className="bg-gray-50 text-gray-400 uppercase tracking-wider text-xs">
+                                        <tr>
+                                            <th className="p-3 text-left">Select</th>
+                                            <th className="p-3 text-left">Status</th>
+                                            <th className="p-3 text-left">Folder / Category</th>
+                                            <th className="p-3 text-left">Word</th>
+                                            <th className="p-3 text-left">Pronunciation</th>
+                                            <th className="p-3 text-left">Meaning</th>
+                                            <th className="p-3 text-left">Mandarin</th>
+                                            <th className="p-3 text-left">Part / Question</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {preview.map(item => {
+                                            const status = statusById.get(item.id) || evaluateImportStatus(item, words, duplicateAction);
+                                            return (
+                                                <tr key={item.id} className={`${item.ignored ? 'opacity-60' : ''} border-t border-gray-100`}>
+                                                    <td className="p-3 align-top">
+                                                        <button onClick={() => togglePreviewSelection(item.id)} className="text-indigo-500">
+                                                            {selectedPreviewIds.has(item.id) ? <CheckSquare size={20} /> : <Square size={20} />}
+                                                        </button>
+                                                    </td>
+                                                    <td className="p-3 align-top">
+                                                        <div className={`inline-flex px-2 py-1 rounded-lg border text-xs font-black ${statusClasses[status.status] || statusClasses.Warning}`}>{status.status}</div>
+                                                        <p className="text-[11px] text-gray-400 mt-1 max-w-[140px]">{status.message}</p>
+                                                        {item.ignored && <button onClick={() => restoreIgnored(item.id)} className="text-xs text-indigo-600 font-bold mt-1">Restore</button>}
+                                                    </td>
+                                                    {['category', 'word', 'pronunciation', 'meaning', 'mandarin'].map(field => (
+                                                        <td key={field} className="p-3 align-top">
+                                                            <input
+                                                                value={item[field] || ''}
+                                                                onChange={e => updatePreviewItem(item.id, field, e.target.value)}
+                                                                className="w-full min-w-[140px] p-2 bg-gray-50 rounded-lg border-2 border-transparent focus:border-indigo-500 outline-none"
+                                                            />
+                                                        </td>
+                                                    ))}
+                                                    <td className="p-3 align-top text-xs text-gray-500 min-w-[160px]">
+                                                        {[item.section, item.part, item.question].filter(Boolean).join(' / ') || '-'}
+                                                        <p className="text-[11px] text-gray-300 mt-1 line-clamp-2">Line {item.lineNumber}: {item.rawSource}</p>
+                                                    </td>
+                                                </tr>
+                                            );
+                                        })}
+                                    </tbody>
+                                </table>
+                            </div>
+
+                            {analysis.unrecognised.length > 0 && (
+                                <div className="bg-white border border-red-100 rounded-2xl p-4 mt-4">
+                                    <h4 className="font-black text-red-700 mb-3">{analysis.unrecognised.length} lines could not be recognised</h4>
+                                    <div className="space-y-2 max-h-56 overflow-y-auto custom-scrollbar">
+                                        {analysis.unrecognised.map(line => (
+                                            <div key={line.id} className="p-3 bg-red-50 rounded-xl text-sm">
+                                                <p className="font-bold text-red-700">Line {line.lineNumber}</p>
+                                                <p className="font-mono text-red-600 break-words">{line.text}</p>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mt-5">
+                                <p className="text-sm text-indigo-700 font-bold">Error and ignored rows will not be imported. Duplicate rows follow your selected duplicate rule.</p>
+                                <button
+                                    onClick={importPreviewItems}
+                                    disabled={importableCount === 0}
+                                    className="px-6 py-4 bg-emerald-500 text-white rounded-2xl font-black shadow-lg hover:bg-emerald-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                                >
+                                    Import {importableCount} Words
+                                </button>
+                            </div>
                         </div>
                     )}
                 </div>
@@ -1019,6 +1486,17 @@ const normalizeAnswer = (text) => String(text || '')
                 const cats = new Set(words.map(w => w.category || 'General'));
                 return ['All', ...Array.from(cats)];
             }, [words]);
+
+            const pendingImportSummary = useMemo(() => {
+                if (!pendingImport) return null;
+                const existingKeys = new Set(words.map(word => makeImportKey(word.word, word.category)));
+                const existing = pendingImport.filter(item => existingKeys.has(makeImportKey(item.word, item.category))).length;
+                return {
+                    total: pendingImport.length,
+                    existing,
+                    fresh: pendingImport.length - existing
+                };
+            }, [pendingImport, words]);
 
             const deleteWord = (id) => {
                 setWords(words.filter(w => w.id !== id));
@@ -1092,9 +1570,14 @@ const normalizeAnswer = (text) => String(text || '')
                     try {
                         const parsed = JSON.parse(event.target.result);
                         if (Array.isArray(parsed)) {
-                            const validData = parsed.filter(item => item.word && item.mandarin).map(item => ({
+                            const validData = parsed.filter(item => item.word).map(item => ({
                                 ...item,
-                                id: item.id || Date.now() + Math.random()
+                                id: item.id || Date.now() + Math.random(),
+                                word: cleanCellText(item.word),
+                                pronunciation: cleanCellText(item.pronunciation),
+                                meaning: cleanCellText(item.meaning),
+                                mandarin: cleanCellText(item.mandarin),
+                                category: cleanCellText(item.category || 'General')
                             }));
                             if (validData.length > 0) {
                                 setPendingImport(validData);
@@ -1111,8 +1594,27 @@ const normalizeAnswer = (text) => String(text || '')
             const handleImportAction = (action) => {
                 if (action === 'replace') {
                     setWords(pendingImport);
-                } else if (action === 'append') {
-                    setWords([...words, ...pendingImport]);
+                } else {
+                    const nextWords = [...words];
+                    pendingImport.forEach(item => {
+                        const existingIndex = nextWords.findIndex(word => makeImportKey(word.word, word.category) === makeImportKey(item.word, item.category));
+                        if (existingIndex !== -1 && action === 'skip') return;
+                        if (existingIndex !== -1 && action === 'update') {
+                            nextWords[existingIndex] = {
+                                ...nextWords[existingIndex],
+                                ...item,
+                                id: nextWords[existingIndex].id,
+                                updatedAt: new Date().toISOString()
+                            };
+                            return;
+                        }
+                        nextWords.push({
+                            ...item,
+                            id: action === 'keep' || existingIndex === -1 ? Date.now() + Math.random() : item.id,
+                            createdAt: item.createdAt || new Date().toISOString()
+                        });
+                    });
+                    setWords(nextWords);
                 }
                 setPendingImport(null);
             };
@@ -1176,10 +1678,20 @@ const normalizeAnswer = (text) => String(text || '')
                                 <Upload size={32} className="text-indigo-600" />
                             </div>
                             <h3 className="text-2xl font-black text-gray-800 mb-2">Import Backup</h3>
-                            <p className="text-gray-500 mb-6 text-center">Found {pendingImport.length} words in the backup file. How would you like to import them?</p>
+                            <p className="text-gray-500 mb-3 text-center">Found {pendingImportSummary?.total || pendingImport.length} words in the backup file.</p>
+                            <div className="grid grid-cols-2 gap-2 w-full max-w-sm mb-5 text-sm">
+                                <div className="bg-emerald-50 text-emerald-700 border border-emerald-100 rounded-xl px-3 py-2 font-black text-center">{pendingImportSummary?.fresh || 0} new</div>
+                                <div className="bg-amber-50 text-amber-700 border border-amber-100 rounded-xl px-3 py-2 font-black text-center">{pendingImportSummary?.existing || 0} existing</div>
+                            </div>
                             <div className="flex flex-col gap-3 w-full max-w-sm">
-                                <button onClick={() => handleImportAction('append')} className="w-full py-4 rounded-xl bg-indigo-600 text-white font-bold shadow-lg hover:bg-indigo-700 transition-colors">
-                                    Append to Existing ({words.length + pendingImport.length} total)
+                                <button onClick={() => handleImportAction('skip')} className="w-full py-4 rounded-xl bg-indigo-600 text-white font-bold shadow-lg hover:bg-indigo-700 transition-colors">
+                                    Skip Existing
+                                </button>
+                                <button onClick={() => handleImportAction('update')} className="w-full py-4 rounded-xl border-2 border-amber-200 bg-amber-50 text-amber-700 font-bold hover:bg-amber-100 transition-colors">
+                                    Update Existing
+                                </button>
+                                <button onClick={() => handleImportAction('keep')} className="w-full py-4 rounded-xl border-2 border-indigo-100 bg-indigo-50 text-indigo-600 font-bold hover:bg-indigo-100 transition-colors">
+                                    Keep Both
                                 </button>
                                 <button onClick={() => handleImportAction('replace')} className="w-full py-4 rounded-xl border-2 border-red-200 bg-red-50 text-red-600 font-bold hover:bg-red-100 transition-colors">
                                     Replace Existing List
