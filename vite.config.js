@@ -8,8 +8,8 @@ export default defineConfig({
   build: {
     rollupOptions: {
       input: {
-        index: resolve(__dirname, 'app/index.html'),
-        ios: resolve(__dirname, 'app-ios/index.html'),
+        index: resolve(__dirname, '_vite-pages/app/index.html'),
+        ios: resolve(__dirname, '_vite-pages/app-ios/index.html'),
       },
     },
   },
