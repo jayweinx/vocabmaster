@@ -561,63 +561,179 @@ const normalizeAnswer = (text) => String(text || '')
             depth: Math.max(0, getFolderPathNames(folder.id, folders).length - 1)
         })).sort((a, b) => a.label.localeCompare(b.label));
 
-        function CategorySelectionScreen({ words, onSelect, title }) {
-            const [selectedCats, setSelectedCats] = useState(new Set());
-            const categories = useMemo(() => {
-                const cats = new Set(words.map(w => w.category || 'General'));
-                return Array.from(cats);
+        const getDescendantFolderIds = (folderId, folders = []) => {
+            const ids = [];
+            const walk = (parentId) => {
+                folders.filter(folder => folder.parentId === parentId).forEach(folder => {
+                    ids.push(folder.id);
+                    walk(folder.id);
+                });
+            };
+            walk(folderId);
+            return ids;
+        };
+
+        const getFolderAndDescendantIds = (folderId, folders = []) => [folderId, ...getDescendantFolderIds(folderId, folders)];
+
+        const getSelectedWordsForFolders = (words = [], folders = [], selectedFolderIds = new Set()) => {
+            const allowedFolderIds = new Set();
+            selectedFolderIds.forEach(folderId => {
+                getFolderAndDescendantIds(folderId, folders).forEach(id => allowedFolderIds.add(id));
+            });
+            return words.filter(word => word.folderId ? allowedFolderIds.has(word.folderId) : selectedFolderIds.has(word.category || 'General'));
+        };
+
+        function CategorySelectionScreen({ words, folders = [], onSelect, title }) {
+            const [selectedFolderIds, setSelectedFolderIds] = useState(new Set());
+            const [currentFolderId, setCurrentFolderId] = useState(null);
+
+            const folderWords = useMemo(() => {
+                const map = new Map();
+                words.forEach(word => {
+                    if (!word.folderId) return;
+                    map.set(word.folderId, (map.get(word.folderId) || 0) + 1);
+                });
+                return map;
             }, [words]);
 
-            const toggleCat = (cat) => {
-                const next = new Set(selectedCats);
-                if (next.has(cat)) next.delete(cat); else next.add(cat);
-                setSelectedCats(next);
+            const directChildren = useMemo(() => folders.filter(folder => (folder.parentId || null) === (currentFolderId || null)), [folders, currentFolderId]);
+            const breadcrumb = useMemo(() => {
+                const byId = new Map(folders.map(folder => [folder.id, folder]));
+                const path = [];
+                let current = currentFolderId ? byId.get(currentFolderId) : null;
+                while (current) {
+                    path.unshift(current);
+                    current = current.parentId ? byId.get(current.parentId) : null;
+                }
+                return path;
+            }, [folders, currentFolderId]);
+
+            const subtreeWordCount = (folderId) => {
+                const ids = getFolderAndDescendantIds(folderId, folders);
+                return words.filter(word => word.folderId && ids.includes(word.folderId)).length;
             };
 
-            const handleSelectAll = () => {
-                if (selectedCats.size === categories.length) {
-                    setSelectedCats(new Set());
-                } else {
-                    setSelectedCats(new Set(categories));
-                }
+            const childFolderCount = (folderId) => folders.filter(folder => folder.parentId === folderId).length;
+
+            const selectedWords = useMemo(() => getSelectedWordsForFolders(words, folders, selectedFolderIds), [words, folders, selectedFolderIds]);
+
+            const getSelectionState = (folderId) => {
+                const ids = getFolderAndDescendantIds(folderId, folders);
+                const wordIds = words.filter(word => word.folderId && ids.includes(word.folderId)).map(word => word.id);
+                if (!wordIds.length) return 'empty';
+                const selectedWordIds = new Set(selectedWords.map(word => word.id));
+                const selectedCount = wordIds.filter(id => selectedWordIds.has(id)).length;
+                if (selectedCount === 0) return 'none';
+                if (selectedCount === wordIds.length) return 'all';
+                return 'partial';
             };
+
+            const toggleFolder = (folderId) => {
+                const state = getSelectionState(folderId);
+                setSelectedFolderIds(prev => {
+                    const next = new Set(prev);
+                    const subtreeIds = getFolderAndDescendantIds(folderId, folders);
+                    subtreeIds.forEach(id => next.delete(id));
+                    if (state !== 'all') next.add(folderId);
+                    return next;
+                });
+            };
+
+            const currentScopeIds = currentFolderId ? getFolderAndDescendantIds(currentFolderId, folders) : folders.filter(folder => !folder.parentId).map(folder => folder.id);
+            const currentScopeWordCount = currentFolderId
+                ? subtreeWordCount(currentFolderId)
+                : words.filter(word => word.folderId && folders.some(folder => !folder.parentId && getFolderAndDescendantIds(folder.id, folders).includes(word.folderId))).length;
+            const selectedInScope = currentScopeIds.every(id => getSelectionState(id) === 'all') && currentScopeIds.length > 0;
+
+            const handleSelectAll = () => {
+                setSelectedFolderIds(prev => {
+                    const next = new Set(prev);
+                    const scopeTopIds = currentFolderId ? [currentFolderId] : folders.filter(folder => !folder.parentId).map(folder => folder.id);
+                    scopeTopIds.forEach(id => getFolderAndDescendantIds(id, folders).forEach(desc => next.delete(desc)));
+                    if (!selectedInScope) scopeTopIds.forEach(id => next.add(id));
+                    return next;
+                });
+            };
+
+            const fallbackCategories = useMemo(() => {
+                const cats = new Set(words.filter(word => !word.folderId).map(w => w.category || 'General'));
+                return Array.from(cats);
+            }, [words]);
 
             return (
                 <div className="flex flex-col h-full bg-gray-50 overflow-hidden">
                     <div className="p-6 pb-2 shrink-0">
                         <h2 className="text-3xl font-black text-gray-800 mb-2">{title}</h2>
                         <p className="text-gray-500 font-medium">Select one or more folders to practice</p>
+                        <div className="flex flex-wrap items-center gap-2 mt-4 text-sm font-bold">
+                            <button onClick={() => setCurrentFolderId(null)} className={`px-3 py-2 rounded-xl ${!currentFolderId ? 'bg-indigo-600 text-white' : 'bg-white text-indigo-600 border border-indigo-100'}`}>{title.split(':')[0]}</button>
+                            {breadcrumb.map(folder => (
+                                <React.Fragment key={folder.id}>
+                                    <span className="text-gray-300">›</span>
+                                    <button onClick={() => setCurrentFolderId(folder.id)} className="px-3 py-2 rounded-xl bg-white text-indigo-600 border border-indigo-100 hover:bg-indigo-50">{folder.name}</button>
+                                </React.Fragment>
+                            ))}
+                        </div>
                     </div>
                     
                     <div className="px-6 py-2 flex items-center justify-between shrink-0">
+                         <div className="flex items-center gap-3">
+                         {currentFolderId && (
+                            <button onClick={() => setCurrentFolderId(folders.find(folder => folder.id === currentFolderId)?.parentId || null)} className="flex items-center gap-2 px-3 py-2 rounded-xl bg-white border border-gray-100 text-gray-600 font-bold hover:text-indigo-600 hover:bg-indigo-50 transition-colors">
+                                <ChevronLeft size={18} /> Back
+                            </button>
+                         )}
                          <button onClick={handleSelectAll} className="flex items-center gap-2 text-indigo-600 font-bold hover:text-indigo-800 transition-colors">
-                            {selectedCats.size === categories.length && categories.length > 0 ? <CheckSquare size={20} /> : <Square size={20} />}
-                            {selectedCats.size === categories.length && categories.length > 0 ? "Deselect All" : "Select All Folders"}
+                            {selectedInScope ? <CheckSquare size={20} /> : <Square size={20} />}
+                            {selectedInScope ? "Deselect All" : currentFolderId ? `Select All in ${breadcrumb[breadcrumb.length - 1]?.name || 'Folder'}` : "Select All Folders"}
                         </button>
-                        <span className="text-sm font-bold text-gray-400">{selectedCats.size} selected</span>
+                         </div>
+                        <span className="text-sm font-bold text-gray-400">{selectedFolderIds.size} folders selected · {selectedWords.length} words</span>
                     </div>
 
                     <div className="flex-1 overflow-y-auto p-6 custom-scrollbar pb-safe">
                         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                            {categories.map(cat => {
-                                const isSelected = selectedCats.has(cat);
+                            {directChildren.map(folder => {
+                                const selectionState = getSelectionState(folder.id);
+                                const isSelected = selectionState === 'all';
+                                const isPartial = selectionState === 'partial';
                                 return (
-                                    <button key={cat} onClick={() => toggleCat(cat)} className={`p-6 border-2 rounded-3xl shadow-sm transition-all text-left group relative ${isSelected ? 'border-indigo-500 bg-indigo-50' : 'border-gray-100 bg-white hover:border-indigo-300'}`}>
+                                    <div key={folder.id} onClick={() => setCurrentFolderId(folder.id)} className={`p-6 border-2 rounded-3xl shadow-sm transition-all text-left group relative cursor-pointer ${isSelected ? 'border-indigo-500 bg-indigo-50' : isPartial ? 'border-yellow-300 bg-yellow-50' : 'border-gray-100 bg-white hover:border-indigo-300'}`}>
                                         <div className="flex justify-between items-start mb-4">
                                             <Folder className={`${isSelected ? 'text-indigo-600' : 'text-indigo-400 group-hover:text-indigo-500'} transition-colors`} size={32} />
-                                            {isSelected ? <CheckCircle className="text-indigo-600" size={24} /> : <div className="w-6 h-6 border-2 border-gray-200 rounded-full" />}
+                                            <button onClick={(e) => { e.stopPropagation(); toggleFolder(folder.id); }} className="w-9 h-9 rounded-xl bg-white border-2 border-gray-100 flex items-center justify-center text-indigo-600 shadow-sm" aria-label={`Select ${folder.name}`}>
+                                                {isSelected ? <CheckSquare size={22} /> : isPartial ? <span className="text-xl leading-none">◩</span> : <Square size={22} className="text-gray-300" />}
+                                            </button>
+                                        </div>
+                                        <h3 className={`text-xl font-bold ${isSelected ? 'text-indigo-900' : 'text-gray-700'}`}>{folder.name}</h3>
+                                        <p className={`text-sm ${isSelected ? 'text-indigo-600/70' : 'text-gray-400'}`}>
+                                            {subtreeWordCount(folder.id)} words · {childFolderCount(folder.id)} subfolders
+                                        </p>
+                                    </div>
+                                )
+                            })}
+                            {directChildren.length === 0 && currentFolderId && (
+                                <div className="col-span-full bg-white border border-gray-100 rounded-3xl p-8 text-center text-gray-400 font-bold">
+                                    No subfolders here. Select this folder from the checkbox above or go back.
+                                </div>
+                            )}
+                            {!folders.length && fallbackCategories.map(cat => {
+                                const isSelected = selectedFolderIds.has(cat);
+                                return (
+                                    <div key={cat} onClick={() => toggleFolder(cat)} className={`p-6 border-2 rounded-3xl shadow-sm transition-all text-left group relative cursor-pointer ${isSelected ? 'border-indigo-500 bg-indigo-50' : 'border-gray-100 bg-white hover:border-indigo-300'}`}>
+                                        <div className="flex justify-between items-start mb-4">
+                                            <Folder className="text-indigo-400" size={32} />
+                                            {isSelected ? <CheckCircle className="text-indigo-600" size={24} /> : <Square className="text-gray-300" size={24} />}
                                         </div>
                                         <h3 className={`text-xl font-bold ${isSelected ? 'text-indigo-900' : 'text-gray-700'}`}>{cat}</h3>
-                                        <p className={`text-sm ${isSelected ? 'text-indigo-600/70' : 'text-gray-400'}`}>
-                                            {words.filter(w => (w.category || 'General') === cat).length} words
-                                        </p>
-                                    </button>
+                                        <p className="text-sm text-gray-400">{words.filter(w => (w.category || 'General') === cat).length} words</p>
+                                    </div>
                                 )
                             })}
                         </div>
                     </div>
                     <div className="p-4 md:p-6 bg-white border-t border-gray-100 shrink-0">
-                        <button onClick={() => onSelect(Array.from(selectedCats))} disabled={selectedCats.size === 0} className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold shadow-lg hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all text-lg flex items-center justify-center gap-2">
+                        <button onClick={() => onSelect(Array.from(selectedFolderIds))} disabled={selectedWords.length === 0} className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold shadow-lg hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all text-lg flex items-center justify-center gap-2">
                             Continue <ChevronRight size={24} />
                         </button>
                     </div>
@@ -625,8 +741,9 @@ const normalizeAnswer = (text) => String(text || '')
             );
         }
 
-        function WordSelectionScreen({ words, selectedCategories, onStart, onBack, title }) {
-            const filtered = useMemo(() => words.filter(w => selectedCategories.includes(w.category || 'General')), [words, selectedCategories]);
+        function WordSelectionScreen({ words, folders = [], selectedFolderIds, onStart, onBack, title }) {
+            const selectedSet = useMemo(() => new Set(selectedFolderIds), [selectedFolderIds]);
+            const filtered = useMemo(() => getSelectedWordsForFolders(words, folders, selectedSet), [words, folders, selectedSet]);
             const [selectedIds, setSelectedIds] = useState(() => new Set(filtered.map(w => w.id)));
 
             const toggle = (id) => {
@@ -645,7 +762,7 @@ const normalizeAnswer = (text) => String(text || '')
                             <button onClick={onBack} className="p-2 bg-gray-100 hover:bg-indigo-100 text-gray-600 hover:text-indigo-600 rounded-full transition-colors"><ChevronLeft size={24} /></button>
                             <div>
                                 <h2 className="text-xl md:text-2xl font-bold text-gray-800">{title}</h2>
-                                <p className="text-sm text-gray-500">{selectedCategories.length} Folder(s) • {selectedIds.size} / {filtered.length} Words</p>
+                                <p className="text-sm text-gray-500">{selectedFolderIds.length} folder(s) selected · {selectedIds.size} / {filtered.length} words</p>
                             </div>
                         </div>
                         <div className="flex flex-wrap gap-2 items-center">
@@ -676,7 +793,7 @@ const normalizeAnswer = (text) => String(text || '')
             );
         }
 
-        function StudyMode({ words }) {
+        function StudyMode({ words, folders }) {
           const [phase, setPhase] = useState('category');
           const [selectedCategories, setSelectedCategories] = useState([]);
           const [activeWords, setActiveWords] = useState([]);
@@ -717,11 +834,11 @@ const normalizeAnswer = (text) => String(text || '')
           }
 
           if (phase === 'category') {
-            return <CategorySelectionScreen words={words} title="Flashcards: Category" onSelect={(cats) => { setSelectedCategories(cats); setPhase('setup'); }} />;
+            return <CategorySelectionScreen words={words} folders={folders} title="Flashcards: Category" onSelect={(folderIds) => { setSelectedCategories(folderIds); setPhase('setup'); }} />;
           }
 
           if (phase === 'setup') {
-            return <WordSelectionScreen words={words} selectedCategories={selectedCategories} title="Select Flashcards" onBack={() => setPhase('category')} onStart={(selected) => {
+            return <WordSelectionScreen words={words} folders={folders} selectedFolderIds={selectedCategories} title="Select Flashcards" onBack={() => setPhase('category')} onStart={(selected) => {
               setActiveWords(selected);
               setIndex(0);
               setIsFlipped(false);
@@ -811,7 +928,7 @@ const normalizeAnswer = (text) => String(text || '')
           );
         }
 
-        function QuizMode({ words, setIsDirty, username }) {
+        function QuizMode({ words, folders, setIsDirty, username }) {
           const [phase, setPhase] = useState('category'); 
           const [selectedCategories, setSelectedCategories] = useState([]);
           const [currentQ, setCurrentQ] = useState(0);
@@ -860,8 +977,8 @@ const normalizeAnswer = (text) => String(text || '')
             }, 1500);
           };
 
-          if (phase === 'category') return <CategorySelectionScreen words={words} title="Quiz: Category" onSelect={(cats) => { setSelectedCategories(cats); setPhase('setup'); }} />;
-          if (phase === 'setup') return <WordSelectionScreen words={words} selectedCategories={selectedCategories} title="Select Words" onBack={() => setPhase('category')} onStart={(sw) => { 
+          if (phase === 'category') return <CategorySelectionScreen words={words} folders={folders} title="Quiz: Category" onSelect={(folderIds) => { setSelectedCategories(folderIds); setPhase('setup'); }} />;
+          if (phase === 'setup') return <WordSelectionScreen words={words} folders={folders} selectedFolderIds={selectedCategories} title="Select Words" onBack={() => setPhase('category')} onStart={(sw) => { 
               const shuffled = shuffleArray(sw);
               setActiveWords(shuffled); 
               
@@ -1088,7 +1205,7 @@ const normalizeAnswer = (text) => String(text || '')
           );
         };
 
-        function SpellingMode({ words, setIsDirty, username }) {
+        function SpellingMode({ words, folders, setIsDirty, username }) {
           const [phase, setPhase] = useState('category');
           const [selectedCategories, setSelectedCategories] = useState([]);
           const [activeWords, setActiveWords] = useState([]);
@@ -1167,8 +1284,8 @@ const normalizeAnswer = (text) => String(text || '')
               return correctCount;
           };
 
-          if (phase === 'category') return <CategorySelectionScreen words={words} title="Spelling: Category" onSelect={(cats) => { setSelectedCategories(cats); setPhase('setup'); }} />;
-          if (phase === 'setup') return <WordSelectionScreen words={words} selectedCategories={selectedCategories} title="Start Spelling" onBack={() => setPhase('category')} onStart={handleStart} />;
+          if (phase === 'category') return <CategorySelectionScreen words={words} folders={folders} title="Spelling: Category" onSelect={(folderIds) => { setSelectedCategories(folderIds); setPhase('setup'); }} />;
+          if (phase === 'setup') return <WordSelectionScreen words={words} folders={folders} selectedFolderIds={selectedCategories} title="Start Spelling" onBack={() => setPhase('category')} onStart={handleStart} />;
 
           if (phase === 'result') {
               const finalScore = getScore();
@@ -2539,9 +2656,9 @@ const normalizeAnswer = (text) => String(text || '')
                 </header>
                 
                 <div className="flex-1 overflow-auto relative">
-                    {activeTab === 'study' && <StudyMode words={words} />}
-                    {activeTab === 'quiz' && <QuizMode words={words} setIsDirty={setIsCurrentTabDirty} username={username} />}
-                    {activeTab === 'spelling' && <SpellingMode words={words} setIsDirty={setIsCurrentTabDirty} username={username} />}
+                    {activeTab === 'study' && <StudyMode words={words} folders={folders} />}
+                    {activeTab === 'quiz' && <QuizMode words={words} folders={folders} setIsDirty={setIsCurrentTabDirty} username={username} />}
+                    {activeTab === 'spelling' && <SpellingMode words={words} folders={folders} setIsDirty={setIsCurrentTabDirty} username={username} />}
                     {activeTab === 'add' && <AddMode words={words} setWords={setWords} folders={folders} setFolders={setFolders} setActiveTab={setActiveTab} />}
                     {activeTab === 'list' && <ListMode words={words} setWords={setWords} folders={folders} setFolders={setFolders} />}
                 </div>
