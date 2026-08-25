@@ -2101,6 +2101,11 @@ const normalizeAnswer = (text) => String(text || '')
             const [showBatchDeleteConfirm, setShowBatchDeleteConfirm] = useState(false);
             const [currentFolderId, setCurrentFolderId] = useState(null);
             const [viewAllDescendants, setViewAllDescendants] = useState(false);
+            const [manageFoldersMode, setManageFoldersMode] = useState(false);
+            const [selectedFolderIds, setSelectedFolderIds] = useState(new Set());
+            const [activeFolderMenuId, setActiveFolderMenuId] = useState(null);
+            const [folderDialog, setFolderDialog] = useState(null);
+            const [folderDraft, setFolderDraft] = useState({ name: '', parentId: '' });
             const [editingId, setEditingId] = useState(null);
             const [editDraft, setEditDraft] = useState({
                 word: '',
@@ -2310,7 +2315,14 @@ const normalizeAnswer = (text) => String(text || '')
             };
             const directWordCount = (folderId) => words.filter(word => word.folderId === folderId).length;
             const childFolderCount = (folderId) => folders.filter(folder => folder.parentId === folderId).length;
+            const descendantFolderCount = (folderId) => Math.max(0, subtreeIds(folderId).length - 1);
             const folderPathLabel = currentFolderId ? currentFolder?.name || 'Folder' : 'All Folders';
+            const folderMoveOptions = useMemo(() => folders.map(folder => ({
+                id: folder.id,
+                name: folder.name,
+                label: getFolderPath(folder.id, folders)
+            })).sort((a, b) => a.label.localeCompare(b.label)), [folders]);
+            const emptyLeafFolders = useMemo(() => folders.filter(folder => directWordCount(folder.id) === 0 && subtreeWordCount(folder.id) === 0 && childFolderCount(folder.id) === 0), [folders, words]);
 
             const filtered = words.filter(w => {
                 const normalizedSearch = search.toLowerCase();
@@ -2331,6 +2343,8 @@ const normalizeAnswer = (text) => String(text || '')
                 setCurrentFolderId(folderId);
                 setViewAllDescendants(false);
                 setSelectedIds(new Set());
+                setSelectedFolderIds(new Set());
+                setActiveFolderMenuId(null);
                 setEditingId(null);
             };
 
@@ -2338,6 +2352,8 @@ const normalizeAnswer = (text) => String(text || '')
                 setCurrentFolderId(folderId);
                 setViewAllDescendants(true);
                 setSelectedIds(new Set());
+                setSelectedFolderIds(new Set());
+                setActiveFolderMenuId(null);
                 setEditingId(null);
             };
 
@@ -2345,7 +2361,146 @@ const normalizeAnswer = (text) => String(text || '')
                 setCurrentFolderId(folderId || null);
                 setViewAllDescendants(false);
                 setSelectedIds(new Set());
+                setSelectedFolderIds(new Set());
+                setActiveFolderMenuId(null);
                 setEditingId(null);
+            };
+
+            const recategorizeWords = (wordList, folderList, affectedIds = null) => {
+                const affected = affectedIds ? new Set(affectedIds) : null;
+                return wordList.map(word => {
+                    if (!word.folderId || !folderList.some(folder => folder.id === word.folderId)) return word;
+                    if (affected && !affected.has(word.folderId)) return word;
+                    return { ...word, category: getFolderPath(word.folderId, folderList) || word.category || 'General' };
+                });
+            };
+
+            const getFolderStats = (folderId, folderList = folders, wordList = words) => {
+                const ids = getFolderAndDescendantIds(folderId, folderList);
+                const idSet = new Set(ids);
+                return {
+                    directWords: wordList.filter(word => word.folderId === folderId).length,
+                    totalWords: wordList.filter(word => word.folderId && idSet.has(word.folderId)).length,
+                    directSubfolders: folderList.filter(folder => folder.parentId === folderId).length,
+                    descendantSubfolders: Math.max(0, ids.length - 1),
+                    ids
+                };
+            };
+
+            const toggleFolderSelection = (folderId) => {
+                setSelectedFolderIds(prev => {
+                    const next = new Set(prev);
+                    next.has(folderId) ? next.delete(folderId) : next.add(folderId);
+                    return next;
+                });
+                setActiveFolderMenuId(null);
+            };
+
+            const openRenameFolder = (folder) => {
+                setFolderDraft({ name: folder.name || '', parentId: folder.parentId || '' });
+                setFolderDialog({ type: 'rename', folderId: folder.id });
+                setActiveFolderMenuId(null);
+            };
+
+            const openMoveFolder = (folder) => {
+                setFolderDraft({ name: folder.name || '', parentId: folder.parentId || '' });
+                setFolderDialog({ type: 'move', folderId: folder.id, folderIds: [folder.id] });
+                setActiveFolderMenuId(null);
+            };
+
+            const openBulkMoveFolders = () => {
+                const folderIds = Array.from(selectedFolderIds);
+                setFolderDraft({ name: '', parentId: currentFolderId || '' });
+                setFolderDialog({ type: 'move', folderIds });
+                setActiveFolderMenuId(null);
+            };
+
+            const openDeleteFolder = (folder) => {
+                setFolderDialog({ type: 'delete', folderIds: [folder.id] });
+                setActiveFolderMenuId(null);
+            };
+
+            const openBulkDeleteFolders = () => {
+                setFolderDialog({ type: 'delete', folderIds: Array.from(selectedFolderIds) });
+                setActiveFolderMenuId(null);
+            };
+
+            const closeFolderDialog = () => {
+                setFolderDialog(null);
+                setFolderDraft({ name: '', parentId: '' });
+            };
+
+            const getTopLevelFolderIds = (ids = []) => {
+                const selected = new Set(ids);
+                return ids.filter(folderId => {
+                    let parentId = folderById.get(folderId)?.parentId;
+                    const seen = new Set();
+                    while (parentId && !seen.has(parentId)) {
+                        if (selected.has(parentId)) return false;
+                        seen.add(parentId);
+                        parentId = folderById.get(parentId)?.parentId;
+                    }
+                    return true;
+                });
+            };
+
+            const getDeleteSummary = (folderIds = []) => {
+                const topIds = getTopLevelFolderIds(folderIds).filter(id => folderById.has(id));
+                const ids = new Set();
+                topIds.forEach(folderId => getFolderAndDescendantIds(folderId, folders).forEach(id => ids.add(id)));
+                return {
+                    topIds,
+                    ids: Array.from(ids),
+                    wordsCount: words.filter(word => word.folderId && ids.has(word.folderId)).length,
+                    subfoldersCount: Math.max(0, ids.size - topIds.length),
+                    folderCount: topIds.length
+                };
+            };
+
+            const handleRenameFolder = () => {
+                const folder = folderDialog?.folderId ? folderById.get(folderDialog.folderId) : null;
+                const name = folderDraft.name.trim().replace(/\s+/g, ' ');
+                if (!folder || !name) return;
+                const nextFolders = folders.map(item => item.id === folder.id ? { ...item, name, updatedAt: new Date().toISOString() } : item);
+                const affectedIds = getFolderAndDescendantIds(folder.id, nextFolders);
+                setFolders(nextFolders);
+                setWords(current => recategorizeWords(current, nextFolders, affectedIds));
+                closeFolderDialog();
+            };
+
+            const handleMoveFolders = () => {
+                const movingTopIds = getTopLevelFolderIds(folderDialog?.folderIds || []).filter(id => folderById.has(id));
+                const targetParentId = folderDraft.parentId || null;
+                if (targetParentId && !folderById.has(targetParentId)) return;
+                const movingSubtreeIds = new Set();
+                movingTopIds.forEach(folderId => getFolderAndDescendantIds(folderId, folders).forEach(id => movingSubtreeIds.add(id)));
+                if (targetParentId && movingSubtreeIds.has(targetParentId)) return;
+                const nextFolders = folders.map(folder => movingTopIds.includes(folder.id) ? { ...folder, parentId: targetParentId, updatedAt: new Date().toISOString() } : folder);
+                setFolders(nextFolders);
+                setWords(current => recategorizeWords(current, nextFolders, movingSubtreeIds));
+                setSelectedFolderIds(new Set());
+                closeFolderDialog();
+            };
+
+            const executeFolderDelete = () => {
+                const summary = getDeleteSummary(folderDialog?.folderIds || []);
+                const deleteIds = new Set(summary.ids);
+                if (deleteIds.size === 0) return;
+                setFolders(folders.filter(folder => !deleteIds.has(folder.id)));
+                setWords(words.filter(word => !word.folderId || !deleteIds.has(word.folderId)));
+                setSelectedFolderIds(new Set());
+                setSelectedIds(new Set());
+                if (currentFolderId && deleteIds.has(currentFolderId)) {
+                    const nearestParent = folders.find(folder => folder.id === currentFolderId)?.parentId || null;
+                    setCurrentFolderId(nearestParent && !deleteIds.has(nearestParent) ? nearestParent : null);
+                    setViewAllDescendants(false);
+                }
+                closeFolderDialog();
+            };
+
+            const openCleanEmptyFolders = () => {
+                setFolderDialog({ type: 'cleanup', folderIds: emptyLeafFolders.map(folder => folder.id) });
+                setActiveFolderMenuId(null);
             };
 
             const toggleSelection = (id) => {
@@ -2369,6 +2524,14 @@ const normalizeAnswer = (text) => String(text || '')
                 setShowBatchDeleteConfirm(false);
             };
 
+            const dialogFolder = folderDialog?.folderId ? folderById.get(folderDialog.folderId) : null;
+            const deleteSummary = (folderDialog?.type === 'delete' || folderDialog?.type === 'cleanup') ? getDeleteSummary(folderDialog.folderIds || []) : null;
+            const movingFolderIds = folderDialog?.type === 'move' ? getTopLevelFolderIds(folderDialog.folderIds || []) : [];
+            const movingSubtreeIds = new Set();
+            movingFolderIds.forEach(folderId => getFolderAndDescendantIds(folderId, folders).forEach(id => movingSubtreeIds.add(id)));
+            const validMoveOptions = folderMoveOptions.filter(option => !movingSubtreeIds.has(option.id));
+            const moveTargetInvalid = folderDialog?.type === 'move' && folderDraft.parentId && movingSubtreeIds.has(folderDraft.parentId);
+
             return (
                 <div className="h-full flex flex-col p-6 max-w-4xl mx-auto w-full overflow-hidden relative">
                     {showBatchDeleteConfirm && (
@@ -2381,6 +2544,70 @@ const normalizeAnswer = (text) => String(text || '')
                             <div className="flex gap-4 w-full max-w-sm">
                                 <button onClick={() => setShowBatchDeleteConfirm(false)} className="flex-1 py-4 rounded-xl border-2 border-gray-200 bg-white text-gray-600 font-bold hover:bg-gray-50 transition-colors">Cancel</button>
                                 <button onClick={executeBatchDelete} className="flex-1 py-4 rounded-xl bg-red-500 text-white font-bold shadow-lg hover:bg-red-600 transition-colors">Delete</button>
+                            </div>
+                        </div>
+                    )}
+                    {folderDialog?.type === 'rename' && (
+                        <div className="absolute inset-0 z-[70] bg-white/95 backdrop-blur-sm flex flex-col items-center justify-center p-8 animate-in fade-in rounded-2xl">
+                            <div className="w-full max-w-md bg-white border border-gray-100 rounded-2xl shadow-xl p-5">
+                                <h3 className="text-2xl font-black text-gray-800 mb-2">Rename Folder</h3>
+                                <p className="text-sm text-gray-500 font-bold mb-4">{getFolderPath(dialogFolder?.id, folders)}</p>
+                                <input
+                                    value={folderDraft.name}
+                                    onChange={(e) => setFolderDraft(current => ({ ...current, name: e.target.value }))}
+                                    className="w-full p-4 bg-gray-50 rounded-xl border-2 border-transparent focus:border-indigo-500 outline-none font-bold text-gray-800 mb-5"
+                                    placeholder="Folder name"
+                                    autoFocus
+                                />
+                                <div className="flex gap-3">
+                                    <button onClick={closeFolderDialog} className="flex-1 py-3 rounded-xl border-2 border-gray-200 bg-white text-gray-600 font-bold hover:bg-gray-50 transition-colors">Cancel</button>
+                                    <button onClick={handleRenameFolder} disabled={!folderDraft.name.trim()} className="flex-1 py-3 rounded-xl bg-indigo-600 text-white font-bold shadow-lg hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">Rename Folder</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                    {folderDialog?.type === 'move' && (
+                        <div className="absolute inset-0 z-[70] bg-white/95 backdrop-blur-sm flex flex-col items-center justify-center p-8 animate-in fade-in rounded-2xl">
+                            <div className="w-full max-w-md bg-white border border-gray-100 rounded-2xl shadow-xl p-5">
+                                <h3 className="text-2xl font-black text-gray-800 mb-2">Move Folder</h3>
+                                <p className="text-sm text-gray-500 font-bold mb-4">{movingFolderIds.length} folder{movingFolderIds.length === 1 ? '' : 's'} selected</p>
+                                <label className="block text-xs font-bold text-gray-400 uppercase tracking-widest mb-1">Move to</label>
+                                <select
+                                    value={folderDraft.parentId}
+                                    onChange={(e) => setFolderDraft(current => ({ ...current, parentId: e.target.value }))}
+                                    className="w-full p-4 bg-gray-50 rounded-xl border-2 border-transparent focus:border-indigo-500 outline-none font-bold text-gray-800 mb-3"
+                                >
+                                    <option value="">All Folders (root)</option>
+                                    {validMoveOptions.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}
+                                </select>
+                                {moveTargetInvalid && <p className="text-sm text-red-500 font-bold mb-3">A folder cannot be moved into itself or its own subfolder.</p>}
+                                <div className="flex gap-3">
+                                    <button onClick={closeFolderDialog} className="flex-1 py-3 rounded-xl border-2 border-gray-200 bg-white text-gray-600 font-bold hover:bg-gray-50 transition-colors">Cancel</button>
+                                    <button onClick={handleMoveFolders} disabled={movingFolderIds.length === 0 || moveTargetInvalid} className="flex-1 py-3 rounded-xl bg-indigo-600 text-white font-bold shadow-lg hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">Move</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                    {(folderDialog?.type === 'delete' || folderDialog?.type === 'cleanup') && (
+                        <div className="absolute inset-0 z-[70] bg-white/95 backdrop-blur-sm flex flex-col items-center justify-center p-8 animate-in fade-in rounded-2xl">
+                            <div className="w-full max-w-md bg-white border border-red-100 rounded-2xl shadow-xl p-5">
+                                <div className="w-14 h-14 bg-red-100 rounded-full flex items-center justify-center mb-4">
+                                    <AlertCircle size={28} className="text-red-500" />
+                                </div>
+                                <h3 className="text-2xl font-black text-gray-800 mb-2">
+                                    {folderDialog.type === 'cleanup' ? 'Clean Up Empty Folders?' : `Delete "${deleteSummary?.folderCount === 1 ? folderById.get(deleteSummary.topIds[0])?.name || 'Folder' : `${deleteSummary?.folderCount || 0} Folders`}"?`}
+                                </h3>
+                                <p className="text-gray-500 mb-5">
+                                    {folderDialog.type === 'cleanup'
+                                        ? `This will delete ${deleteSummary?.folderCount || 0} empty folders. Folders with words or subfolders will not be deleted.`
+                                        : `This will delete ${deleteSummary?.subfoldersCount || 0} subfolders and ${deleteSummary?.wordsCount || 0} vocabulary words.`}
+                                </p>
+                                <div className="flex gap-3">
+                                    <button onClick={closeFolderDialog} className="flex-1 py-3 rounded-xl border-2 border-gray-200 bg-white text-gray-600 font-bold hover:bg-gray-50 transition-colors">Cancel</button>
+                                    <button onClick={executeFolderDelete} disabled={!deleteSummary || deleteSummary.ids.length === 0} className="flex-1 py-3 rounded-xl bg-red-500 text-white font-bold shadow-lg hover:bg-red-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+                                        {folderDialog.type === 'cleanup' ? 'Delete Empty Folders' : 'Delete Folder & Contents'}
+                                    </button>
+                                </div>
                             </div>
                         </div>
                     )}
@@ -2416,8 +2643,11 @@ const normalizeAnswer = (text) => String(text || '')
                     )}
                     <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-4 shrink-0">
                         <h2 className="text-3xl font-black text-gray-800">Vocabulary List</h2>
-                        <div className="flex gap-2 w-full sm:w-auto">
+                        <div className="flex gap-2 w-full sm:w-auto flex-wrap">
                             <input type="file" accept=".json" ref={fileInputRef} onChange={handleFileChange} className="hidden" />
+                            <button onClick={() => { setManageFoldersMode(value => !value); setSelectedFolderIds(new Set()); setActiveFolderMenuId(null); }} className={`flex-1 sm:flex-none flex items-center justify-center gap-2 px-4 py-2 rounded-xl font-bold transition-colors border-2 ${manageFoldersMode ? 'bg-indigo-600 border-indigo-600 text-white' : 'bg-white border-gray-100 text-gray-600 hover:bg-indigo-50 hover:text-indigo-600'}`}>
+                                {manageFoldersMode ? <CheckSquare size={20} /> : <Folder size={20} />} Manage Folders
+                            </button>
                             <button onClick={() => fileInputRef.current.click()} className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-4 py-2 bg-white border-2 border-indigo-100 text-indigo-600 rounded-xl font-bold hover:bg-indigo-50 transition-colors">
                                 <Upload size={20} /> Import
                             </button>
@@ -2429,7 +2659,7 @@ const normalizeAnswer = (text) => String(text || '')
 
                     <div className="relative mb-6 shrink-0">
                         <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
-                        <input value={search} onChange={e => { setSearch(e.target.value); setSelectedIds(new Set()); }} className="w-full pl-12 pr-4 py-4 bg-white border-2 border-transparent focus:border-indigo-500 rounded-2xl outline-none shadow-sm transition-colors" placeholder={currentFolderId ? `Search inside ${currentFolder?.name || 'folder'}...` : 'Search all words or characters...'} />
+                        <input value={search} onChange={e => { setSearch(e.target.value); setSelectedIds(new Set()); setSelectedFolderIds(new Set()); }} className="w-full pl-12 pr-4 py-4 bg-white border-2 border-transparent focus:border-indigo-500 rounded-2xl outline-none shadow-sm transition-colors" placeholder={currentFolderId ? `Search inside ${currentFolder?.name || 'folder'}...` : 'Search all words or characters...'} />
                     </div>
 
                     <div className="mb-4 shrink-0">
@@ -2455,36 +2685,67 @@ const normalizeAnswer = (text) => String(text || '')
                                         <ChevronLeft size={18} /> Back
                                     </button>
                                 )}
-                                {currentFolderId && subtreeWordCount(currentFolderId) !== directWordCount(currentFolderId) && (
-                                    <button onClick={() => setViewAllDescendants(value => !value)} className={`px-3 py-2 rounded-xl font-bold ${viewAllDescendants ? 'bg-indigo-600 text-white' : 'bg-indigo-50 text-indigo-600 border border-indigo-100'}`}>
-                                        {viewAllDescendants ? 'Show Direct Words' : `View All ${subtreeWordCount(currentFolderId)} Words`}
-                                    </button>
-                                )}
-                            </div>
-                        </div>
-                    </div>
+                                 {currentFolderId && subtreeWordCount(currentFolderId) !== directWordCount(currentFolderId) && (
+                                     <button onClick={() => setViewAllDescendants(value => !value)} className={`px-3 py-2 rounded-xl font-bold ${viewAllDescendants ? 'bg-indigo-600 text-white' : 'bg-indigo-50 text-indigo-600 border border-indigo-100'}`}>
+                                         {viewAllDescendants ? 'Show Direct Words' : `View All ${subtreeWordCount(currentFolderId)} Words`}
+                                     </button>
+                                 )}
+                                 <button onClick={openCleanEmptyFolders} disabled={emptyLeafFolders.length === 0} className="px-3 py-2 rounded-xl bg-white border border-gray-100 text-gray-600 font-bold hover:bg-red-50 hover:text-red-600 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2">
+                                     <Trash2 size={16} /> Clean Up Empty Folders
+                                 </button>
+                             </div>
+                         </div>
+                     </div>
 
-                    {!search && childFolders.length > 0 && (
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4 shrink-0 max-h-64 overflow-y-auto custom-scrollbar pr-1">
-                            {childFolders.map(folder => {
-                                const totalWords = subtreeWordCount(folder.id);
-                                const subfolders = childFolderCount(folder.id);
-                                return (
-                                    <div key={folder.id} onClick={() => openFolder(folder.id)} className="p-4 bg-white rounded-2xl border border-gray-100 shadow-sm cursor-pointer group hover:border-indigo-200 transition-colors">
-                                        <div>
-                                            <div className="flex items-start justify-between gap-3">
-                                                <div className="flex items-start gap-3 min-w-0">
-                                                    <Folder size={28} className="text-indigo-400 shrink-0 mt-1" />
-                                                    <div className="min-w-0">
-                                                        <h3 className="text-lg font-black text-gray-800 truncate group-hover:text-indigo-600">{folder.name}</h3>
-                                                        <p className="text-sm text-gray-400 font-bold">{totalWords} words · {subfolders} subfolders</p>
-                                                    </div>
-                                                </div>
-                                                <ChevronRight size={22} className="text-gray-300 group-hover:text-indigo-500 shrink-0" />
-                                            </div>
-                                        </div>
-                                        <div className="flex flex-wrap gap-2 mt-3">
-                                            <button onClick={(e) => { e.stopPropagation(); openFolder(folder.id); }} className="px-3 py-2 rounded-lg bg-indigo-50 text-indigo-600 font-bold text-sm hover:bg-indigo-100">Open Folder</button>
+                     {manageFoldersMode && selectedFolderIds.size > 0 && (
+                         <div className="flex justify-between items-center mb-4 bg-indigo-50 p-3 rounded-xl border border-indigo-100 shadow-sm shrink-0 flex-wrap gap-2">
+                             <span className="text-sm text-indigo-700 font-black">{selectedFolderIds.size} folders selected</span>
+                             <div className="flex gap-2">
+                                 <button onClick={openBulkMoveFolders} className="px-4 py-2 rounded-lg bg-white border border-indigo-100 text-indigo-600 font-bold hover:bg-indigo-100 transition-colors">Move</button>
+                                 <button onClick={openBulkDeleteFolders} className="px-4 py-2 rounded-lg bg-red-50 border border-red-100 text-red-600 font-bold hover:bg-red-100 transition-colors">Delete</button>
+                             </div>
+                         </div>
+                     )}
+
+                     {!search && childFolders.length > 0 && (
+                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4 shrink-0 max-h-64 overflow-y-auto custom-scrollbar pr-1">
+                             {childFolders.map(folder => {
+                                 const totalWords = subtreeWordCount(folder.id);
+                                 const subfolders = childFolderCount(folder.id);
+                                 const folderSelected = selectedFolderIds.has(folder.id);
+                                 return (
+                                     <div key={folder.id} onClick={() => manageFoldersMode ? toggleFolderSelection(folder.id) : openFolder(folder.id)} className={`p-4 bg-white rounded-2xl border shadow-sm cursor-pointer group hover:border-indigo-200 transition-colors relative ${folderSelected ? 'border-indigo-300 ring-1 ring-indigo-300 bg-indigo-50/50' : 'border-gray-100'}`}>
+                                         <div>
+                                             <div className="flex items-start justify-between gap-3">
+                                                 <div className="flex items-start gap-3 min-w-0">
+                                                     {manageFoldersMode && (
+                                                         <button onClick={(e) => { e.stopPropagation(); toggleFolderSelection(folder.id); }} className="mt-1 text-indigo-600 shrink-0" title="Select folder">
+                                                             {folderSelected ? <CheckSquare size={24} /> : <Square size={24} />}
+                                                         </button>
+                                                     )}
+                                                     <Folder size={28} className="text-indigo-400 shrink-0 mt-1" />
+                                                     <div className="min-w-0">
+                                                         <h3 className="text-lg font-black text-gray-800 truncate group-hover:text-indigo-600">{folder.name}</h3>
+                                                         <p className="text-sm text-gray-400 font-bold">{totalWords} words · {subfolders} subfolders</p>
+                                                     </div>
+                                                 </div>
+                                                 <div className="flex items-start gap-1 shrink-0">
+                                                     <div className="relative">
+                                                         <button onClick={(e) => { e.stopPropagation(); setActiveFolderMenuId(activeFolderMenuId === folder.id ? null : folder.id); }} className="w-9 h-9 rounded-lg bg-gray-50 text-gray-500 hover:bg-indigo-50 hover:text-indigo-600 font-black" title="Folder actions">⋯</button>
+                                                         {activeFolderMenuId === folder.id && (
+                                                             <div className="absolute right-0 top-10 z-20 w-44 bg-white border border-gray-100 rounded-xl shadow-xl p-2">
+                                                                 <button onClick={(e) => { e.stopPropagation(); openRenameFolder(folder); }} className="w-full text-left px-3 py-2 rounded-lg text-sm font-bold text-gray-700 hover:bg-indigo-50 hover:text-indigo-600">Rename Folder</button>
+                                                                 <button onClick={(e) => { e.stopPropagation(); openMoveFolder(folder); }} className="w-full text-left px-3 py-2 rounded-lg text-sm font-bold text-gray-700 hover:bg-indigo-50 hover:text-indigo-600">Move Folder</button>
+                                                                 <button onClick={(e) => { e.stopPropagation(); openDeleteFolder(folder); }} className="w-full text-left px-3 py-2 rounded-lg text-sm font-bold text-red-600 hover:bg-red-50">Delete Folder</button>
+                                                             </div>
+                                                         )}
+                                                     </div>
+                                                     <ChevronRight size={22} className="text-gray-300 group-hover:text-indigo-500 shrink-0 mt-2" />
+                                                 </div>
+                                             </div>
+                                         </div>
+                                         <div className="flex flex-wrap gap-2 mt-3">
+                                             <button onClick={(e) => { e.stopPropagation(); openFolder(folder.id); }} className="px-3 py-2 rounded-lg bg-indigo-50 text-indigo-600 font-bold text-sm hover:bg-indigo-100">Open Folder</button>
                                             {totalWords > 0 && <button onClick={(e) => { e.stopPropagation(); viewAllFolderWords(folder.id); }} className="px-3 py-2 rounded-lg bg-white border border-indigo-100 text-indigo-600 font-bold text-sm hover:bg-indigo-50">View All {totalWords} Words</button>}
                                         </div>
                                     </div>

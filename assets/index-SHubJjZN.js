@@ -1,4 +1,4 @@
-import{a as e,i as t,n,r,t as i}from"./src-o3byReVs.js";var a=e(t(),1),o=r(),s=n(),c=document.getElementById(`root`);try{(0,o.createRoot)(c).render((0,s.jsx)(a.StrictMode,{children:(0,s.jsx)(i,{})}))}catch(e){console.error(`Unable to start Vocab Master.`,e),c?.classList.remove(`app-loading`),c&&(c.innerHTML=`
+import{a as e,i as t,n,r,t as i}from"./src-BepulvYK.js";var a=e(t(),1),o=r(),s=n(),c=document.getElementById(`root`);try{(0,o.createRoot)(c).render((0,s.jsx)(a.StrictMode,{children:(0,s.jsx)(i,{})}))}catch(e){console.error(`Unable to start Vocab Master.`,e),c?.classList.remove(`app-loading`),c&&(c.innerHTML=`
       <main class="min-h-screen flex items-center justify-center bg-slate-50 px-6 text-slate-900">
         <section class="max-w-md rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
           <h1 class="text-xl font-bold">Vocab Master could not start</h1>
