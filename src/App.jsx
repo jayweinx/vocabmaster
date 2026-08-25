@@ -2099,8 +2099,8 @@ const normalizeAnswer = (text) => String(text || '')
             const [pendingImportFolders, setPendingImportFolders] = useState([]);
             const [selectedIds, setSelectedIds] = useState(new Set());
             const [showBatchDeleteConfirm, setShowBatchDeleteConfirm] = useState(false);
-            const [selectedCategoryFilter, setSelectedCategoryFilter] = useState('All');
-            const [showCategoryDeleteConfirm, setShowCategoryDeleteConfirm] = useState(false);
+            const [currentFolderId, setCurrentFolderId] = useState(null);
+            const [viewAllDescendants, setViewAllDescendants] = useState(false);
             const [editingId, setEditingId] = useState(null);
             const [editDraft, setEditDraft] = useState({
                 word: '',
@@ -2110,11 +2110,6 @@ const normalizeAnswer = (text) => String(text || '')
                 category: 'General'
             });
             const fileInputRef = useRef(null);
-
-            const categories = useMemo(() => {
-                const cats = new Set(words.map(w => w.category || 'General'));
-                return ['All', ...Array.from(cats)];
-            }, [words]);
 
             const pendingImportSummary = useMemo(() => {
                 if (!pendingImport) return null;
@@ -2126,6 +2121,11 @@ const normalizeAnswer = (text) => String(text || '')
                     fresh: pendingImport.length - existing
                 };
             }, [pendingImport, words]);
+
+            const editCategoryOptions = useMemo(() => {
+                const cats = new Set(words.map(w => w.category || 'General'));
+                return Array.from(cats).sort();
+            }, [words]);
 
             const deleteWord = (id) => {
                 setWords(words.filter(w => w.id !== id));
@@ -2288,21 +2288,64 @@ const normalizeAnswer = (text) => String(text || '')
                 setPendingImportFolders([]);
             };
 
+            const folderById = useMemo(() => new Map(folders.map(folder => [folder.id, folder])), [folders]);
+            const currentFolder = currentFolderId ? folderById.get(currentFolderId) : null;
+            const childFolders = useMemo(() => folders.filter(folder => (folder.parentId || null) === (currentFolderId || null)), [folders, currentFolderId]);
+            const breadcrumb = useMemo(() => {
+                const path = [];
+                let current = currentFolder;
+                const seen = new Set();
+                while (current && !seen.has(current.id)) {
+                    seen.add(current.id);
+                    path.unshift(current);
+                    current = current.parentId ? folderById.get(current.parentId) : null;
+                }
+                return path;
+            }, [currentFolder, folderById]);
+
+            const subtreeIds = (folderId) => getFolderAndDescendantIds(folderId, folders);
+            const subtreeWordCount = (folderId) => {
+                const ids = new Set(subtreeIds(folderId));
+                return words.filter(word => word.folderId && ids.has(word.folderId)).length;
+            };
+            const directWordCount = (folderId) => words.filter(word => word.folderId === folderId).length;
+            const childFolderCount = (folderId) => folders.filter(folder => folder.parentId === folderId).length;
+            const folderPathLabel = currentFolderId ? currentFolder?.name || 'Folder' : 'All Folders';
+
             const filtered = words.filter(w => {
                 const normalizedSearch = search.toLowerCase();
                 const matchSearch = (w.word || '').toLowerCase().includes(normalizedSearch)
                     || (w.mandarin || '').includes(search)
                     || (w.meaning || '').toLowerCase().includes(normalizedSearch)
                     || (w.pronunciation || '').toLowerCase().includes(normalizedSearch);
-                const matchCategory = selectedCategoryFilter === 'All' || (w.category || 'General') === selectedCategoryFilter;
-                return matchSearch && matchCategory;
+                if (!matchSearch) return false;
+                if (!currentFolderId) return Boolean(search);
+                if (search || viewAllDescendants) {
+                    const ids = new Set(subtreeIds(currentFolderId));
+                    return w.folderId ? ids.has(w.folderId) : false;
+                }
+                return w.folderId === currentFolderId;
             });
 
-            const deleteCategory = () => {
-                setWords(words.filter(w => (w.category || 'General') !== selectedCategoryFilter));
-                setSelectedCategoryFilter('All');
+            const openFolder = (folderId) => {
+                setCurrentFolderId(folderId);
+                setViewAllDescendants(false);
                 setSelectedIds(new Set());
-                setShowCategoryDeleteConfirm(false);
+                setEditingId(null);
+            };
+
+            const viewAllFolderWords = (folderId) => {
+                setCurrentFolderId(folderId);
+                setViewAllDescendants(true);
+                setSelectedIds(new Set());
+                setEditingId(null);
+            };
+
+            const goToFolder = (folderId) => {
+                setCurrentFolderId(folderId || null);
+                setViewAllDescendants(false);
+                setSelectedIds(new Set());
+                setEditingId(null);
             };
 
             const toggleSelection = (id) => {
@@ -2371,20 +2414,6 @@ const normalizeAnswer = (text) => String(text || '')
                             </div>
                         </div>
                     )}
-                    {showCategoryDeleteConfirm && (
-                        <div className="absolute inset-0 z-[60] bg-white/95 backdrop-blur-sm flex flex-col items-center justify-center p-8 animate-in fade-in rounded-2xl">
-                            <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mb-4">
-                                <AlertCircle size={32} className="text-red-500" />
-                            </div>
-                            <h3 className="text-2xl font-black text-gray-800 mb-2">Delete Folder?</h3>
-                            <p className="text-gray-500 mb-6 text-center">Are you sure you want to delete the folder <span className="font-bold text-gray-700">"{selectedCategoryFilter}"</span> and all its {filtered.length} words?</p>
-                            <div className="flex gap-4 w-full max-w-sm">
-                                <button onClick={() => setShowCategoryDeleteConfirm(false)} className="flex-1 py-4 rounded-xl border-2 border-gray-200 bg-white text-gray-600 font-bold hover:bg-gray-50 transition-colors">Cancel</button>
-                                <button onClick={deleteCategory} className="flex-1 py-4 rounded-xl bg-red-500 text-white font-bold shadow-lg hover:bg-red-600 transition-colors">Delete Folder</button>
-                            </div>
-                        </div>
-                    )}
-                    
                     <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-4 shrink-0">
                         <h2 className="text-3xl font-black text-gray-800">Vocabulary List</h2>
                         <div className="flex gap-2 w-full sm:w-auto">
@@ -2400,29 +2429,77 @@ const normalizeAnswer = (text) => String(text || '')
 
                     <div className="relative mb-6 shrink-0">
                         <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
-                        <input value={search} onChange={e => setSearch(e.target.value)} className="w-full pl-12 pr-4 py-4 bg-white border-2 border-transparent focus:border-indigo-500 rounded-2xl outline-none shadow-sm transition-colors" placeholder="Search words or characters..." />
+                        <input value={search} onChange={e => { setSearch(e.target.value); setSelectedIds(new Set()); }} className="w-full pl-12 pr-4 py-4 bg-white border-2 border-transparent focus:border-indigo-500 rounded-2xl outline-none shadow-sm transition-colors" placeholder={currentFolderId ? `Search inside ${currentFolder?.name || 'folder'}...` : 'Search all words or characters...'} />
                     </div>
-                    
-                    <div className="flex flex-wrap gap-2 mb-4 shrink-0 overflow-x-auto pb-2 custom-scrollbar">
-                        {categories.map(c => (
-                            <button key={c} onClick={() => { setSelectedCategoryFilter(c); setSelectedIds(new Set()); }}
-                                    className={`px-4 py-2 rounded-xl font-bold text-sm transition-all whitespace-nowrap ${selectedCategoryFilter === c ? 'bg-indigo-600 text-white shadow-md' : 'bg-white text-gray-500 border border-gray-200 hover:bg-gray-50'}`}>
-                                {c === 'All' ? 'All Folders' : c}
-                            </button>
-                        ))}
+
+                    <div className="mb-4 shrink-0">
+                        <div className="flex flex-wrap items-center gap-2 text-sm font-bold mb-3">
+                            <button onClick={() => goToFolder(null)} className={`px-3 py-2 rounded-xl ${!currentFolderId ? 'bg-indigo-600 text-white' : 'bg-white text-indigo-600 border border-indigo-100'}`}>All Folders</button>
+                            {breadcrumb.map(folder => (
+                                <React.Fragment key={folder.id}>
+                                    <span className="text-gray-300">›</span>
+                                    <button onClick={() => goToFolder(folder.id)} className="px-3 py-2 rounded-xl bg-white text-indigo-600 border border-indigo-100 hover:bg-indigo-50">{folder.name}</button>
+                                </React.Fragment>
+                            ))}
+                        </div>
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                            <div>
+                                <p className="text-sm font-black text-gray-700">{folderPathLabel}</p>
+                                <p className="text-xs text-gray-400 font-bold">
+                                    {currentFolderId ? `${directWordCount(currentFolderId)} direct words · ${subtreeWordCount(currentFolderId)} total words · ${childFolders.length} subfolders` : `${folders.filter(folder => !folder.parentId).length} major folders · ${words.length} total words`}
+                                </p>
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                                {currentFolderId && (
+                                    <button onClick={() => goToFolder(currentFolder?.parentId || null)} className="px-3 py-2 rounded-xl bg-white border border-gray-100 text-gray-600 font-bold hover:bg-indigo-50 hover:text-indigo-600 flex items-center gap-2">
+                                        <ChevronLeft size={18} /> Back
+                                    </button>
+                                )}
+                                {currentFolderId && subtreeWordCount(currentFolderId) !== directWordCount(currentFolderId) && (
+                                    <button onClick={() => setViewAllDescendants(value => !value)} className={`px-3 py-2 rounded-xl font-bold ${viewAllDescendants ? 'bg-indigo-600 text-white' : 'bg-indigo-50 text-indigo-600 border border-indigo-100'}`}>
+                                        {viewAllDescendants ? 'Show Direct Words' : `View All ${subtreeWordCount(currentFolderId)} Words`}
+                                    </button>
+                                )}
+                            </div>
+                        </div>
                     </div>
-                    
+
+                    {!search && childFolders.length > 0 && (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4 shrink-0 max-h-64 overflow-y-auto custom-scrollbar pr-1">
+                            {childFolders.map(folder => {
+                                const totalWords = subtreeWordCount(folder.id);
+                                const subfolders = childFolderCount(folder.id);
+                                return (
+                                    <div key={folder.id} onClick={() => openFolder(folder.id)} className="p-4 bg-white rounded-2xl border border-gray-100 shadow-sm cursor-pointer group hover:border-indigo-200 transition-colors">
+                                        <div>
+                                            <div className="flex items-start justify-between gap-3">
+                                                <div className="flex items-start gap-3 min-w-0">
+                                                    <Folder size={28} className="text-indigo-400 shrink-0 mt-1" />
+                                                    <div className="min-w-0">
+                                                        <h3 className="text-lg font-black text-gray-800 truncate group-hover:text-indigo-600">{folder.name}</h3>
+                                                        <p className="text-sm text-gray-400 font-bold">{totalWords} words · {subfolders} subfolders</p>
+                                                    </div>
+                                                </div>
+                                                <ChevronRight size={22} className="text-gray-300 group-hover:text-indigo-500 shrink-0" />
+                                            </div>
+                                        </div>
+                                        <div className="flex flex-wrap gap-2 mt-3">
+                                            <button onClick={(e) => { e.stopPropagation(); openFolder(folder.id); }} className="px-3 py-2 rounded-lg bg-indigo-50 text-indigo-600 font-bold text-sm hover:bg-indigo-100">Open Folder</button>
+                                            {totalWords > 0 && <button onClick={(e) => { e.stopPropagation(); viewAllFolderWords(folder.id); }} className="px-3 py-2 rounded-lg bg-white border border-indigo-100 text-indigo-600 font-bold text-sm hover:bg-indigo-50">View All {totalWords} Words</button>}
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )}
+
                     <div className="flex justify-between items-center mb-4 bg-white p-3 rounded-xl border border-gray-100 shadow-sm shrink-0 flex-wrap gap-2">
                         <div className="flex items-center gap-4">
                             <button onClick={handleSelectAll} className="flex items-center gap-2 text-gray-600 font-bold hover:text-indigo-600 transition-colors ml-2">
                                 {selectedIds.size === filtered.length && filtered.length > 0 ? <CheckSquare className="text-indigo-600" size={20} /> : <Square className="text-gray-400" size={20} />}
                                 Select All
                             </button>
-                            {selectedCategoryFilter !== 'All' && (
-                                <button onClick={() => setShowCategoryDeleteConfirm(true)} className="flex items-center gap-2 px-3 py-1.5 bg-red-50 text-red-600 rounded-lg font-bold hover:bg-red-100 transition-colors text-sm border border-red-100">
-                                    <Folder size={16} /> Delete Folder ({filtered.length})
-                                </button>
-                            )}
+                            <span className="text-sm text-gray-400 font-bold">{filtered.length} words shown</span>
                         </div>
                         {selectedIds.size > 0 && (
                             <button onClick={() => setShowBatchDeleteConfirm(true)} className="flex items-center gap-2 px-4 py-2 bg-red-50 text-red-600 rounded-lg font-bold hover:bg-red-100 transition-colors text-sm border border-red-100">
@@ -2530,7 +2607,7 @@ const normalizeAnswer = (text) => String(text || '')
                         )}
                     </div>
                     <datalist id="vocab-categories">
-                        {categories.filter(c => c !== 'All').map(c => <option key={c} value={c} />)}
+                        {editCategoryOptions.map(c => <option key={c} value={c} />)}
                     </datalist>
                 </div>
             );
