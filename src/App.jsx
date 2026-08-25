@@ -1656,8 +1656,14 @@ const normalizeAnswer = (text) => String(text || '')
                 });
 
                 const nextWords = [...words];
+                const resolveProposedFolderId = (folderId) => {
+                    let current = proposedFolders.find(folder => folder.id === folderId);
+                    while (current?.ignored) current = current.parentId ? proposedFolders.find(folder => folder.id === current.parentId) : null;
+                    return current?.id || folderId;
+                };
                 preview.forEach(item => {
-                    const realFolderId = folderIdMap.get(item.folderId) || item.folderId || null;
+                    const resolvedFolderId = resolveProposedFolderId(item.folderId);
+                    const realFolderId = folderIdMap.get(resolvedFolderId) || resolvedFolderId || null;
                     const categoryPath = realFolderId ? getFolderPath(realFolderId, nextFolders) : cleanCellText(item.category || 'General');
                     const draftItem = { ...item, finalFolderId: realFolderId, category: categoryPath };
                     const status = evaluateImportStatus(draftItem, nextWords, duplicateAction).status;
