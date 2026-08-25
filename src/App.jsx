@@ -109,6 +109,8 @@ const normalizeAnswer = (text) => String(text || '')
         const normalizeWordKey = (text) => cleanCellText(text).toLowerCase();
         const normalizeCategoryKey = (text) => cleanCellText(text || 'General').toLowerCase();
         const makeImportKey = (word, category) => `${normalizeCategoryKey(category)}::${normalizeWordKey(word)}`;
+        const makeId = (prefix = 'id') => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+        const normalizeDash = (text) => cleanCellText(text).replace(/[‐‑‒–—―]/g, '-').replace(/\s*-\s*/g, ' - ');
 
         const stripLinePrefix = (line) => cleanCellText(line)
             .replace(/^[•●▪▫◦*]\s*/, '')
@@ -117,16 +119,60 @@ const normalizeAnswer = (text) => String(text || '')
             .replace(/^[\-–—]\s+/, '')
             .trim();
 
+        const inferHeadingType = (line, lineIndex = 0, hasDocumentTitle = false) => {
+            const original = cleanCellText(line);
+            const text = normalizeDash(original).replace(/[:：]+$/, '');
+            const lower = text.toLowerCase();
+            if (!text) return null;
+            if (/^page\s+\d+/i.test(text)) {
+                const pageMatch = text.match(/^page\s+(\d+)/i);
+                const contexts = [];
+                const paperMatch = text.match(/\bpaper\s+\d+\b/i);
+                const partMatch = text.match(/\bpart\s+(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b/i);
+                const writingMatch = text.match(/\bwriting\b/i);
+                const passageMatch = text.match(/\bpassage\s*[:：]\s*.+$/i);
+                if (paperMatch) contexts.push({ kind: 'PAPER', label: normalizeDash(paperMatch[0]), rawHeading: original, level: 1 });
+                if (partMatch) contexts.push({ kind: 'SECTION', label: normalizeDash(partMatch[0]), rawHeading: original, level: 2 });
+                if (!partMatch && writingMatch) contexts.push({ kind: 'SECTION', label: 'Writing', rawHeading: original, level: 2 });
+                if (passageMatch) contexts.push({ kind: 'PASSAGE', label: normalizeDash(passageMatch[0]).replace(/^passage\s*[:：]\s*/i, 'Passage - '), rawHeading: original, level: 3 });
+                return { kind: 'PAGE_CONTEXT', label: text, rawHeading: original, sourcePage: pageMatch ? Number(pageMatch[1]) : null, contexts };
+            }
+            if (/^paper\s+\d+\b/i.test(text)) return { kind: 'PAPER', label: text, rawHeading: original, level: 1 };
+            if (/^part\s+(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b/i.test(text)) {
+                const instructionMatch = text.match(/^part\s+(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+-\s+instructions?$/i);
+                if (instructionMatch) return { kind: 'INSTRUCTIONS', label: 'Instructions', rawHeading: original, level: 3 };
+                return { kind: 'SECTION', label: text, rawHeading: original, level: 2 };
+            }
+            if (/^(section|unit|chapter)\s+[A-Za-z0-9]+\b/i.test(text)) return { kind: 'SECTION', label: text, rawHeading: original, level: 2 };
+            if (/^writing\b/i.test(text)) return { kind: 'SECTION', label: text, rawHeading: original, level: 2 };
+            if (/^instructions?\b/i.test(text)) return { kind: 'INSTRUCTIONS', label: text.replace(/^part\s+\S+\s+-\s+/i, ''), rawHeading: original, level: 3 };
+            if (/^question\s+\d+\b/i.test(text)) return { kind: 'QUESTION', label: text, rawHeading: original, level: 3 };
+            if (/^questions\s+\d+\s*-\s*\d+\b/i.test(text)) return { kind: 'QUESTION_RANGE', label: text, rawHeading: original, level: 3 };
+            if (/^passage\s+vocabulary\b/i.test(text)) {
+                const paragraphMatch = text.match(/paragraphs?\s+.+$/i);
+                return { kind: 'PASSAGE_SUBSECTION', label: paragraphMatch ? normalizeDash(paragraphMatch[0]) : text, rawHeading: original, level: 4 };
+            }
+            if (/^passage\b/i.test(text)) return { kind: 'PASSAGE', label: text, rawHeading: original, level: 3 };
+            if (/^text\s+[A-Z]\b/i.test(text)) return { kind: 'TEXT', label: text, rawHeading: original, level: 3 };
+            if (/^options?\s+[A-Z](?:\s*-\s*[A-Z])?\b/i.test(text)) return { kind: 'OPTIONS', label: text, rawHeading: original, level: 3 };
+            if (/vocabulary$/i.test(text) && hasDocumentTitle && !/[()[\]\u3400-\u9fff]/.test(text)) return { kind: 'SUBTITLE', label: text, rawHeading: original, level: 0 };
+            if (lineIndex <= 3 && !hasDocumentTitle && !/[()[\]\u3400-\u9fff]/.test(text) && text.split(/\s+/).length >= 3) {
+                return { kind: 'DOCUMENT_TITLE', label: text, rawHeading: original, level: 0 };
+            }
+            if (!/[()[\]\u3400-\u9fff]/.test(text) && text.split(/\s+/).length >= 2 && text.split(/\s+/).length <= 5) {
+                return { kind: 'UNKNOWN', label: text, rawHeading: original, level: 3, needsReview: true };
+            }
+            return null;
+        };
+
         const detectHeading = (line) => {
-            const text = cleanCellText(line).replace(/[:：]+$/, '');
-            const match = text.match(/^(form|english|unit|chapter|part|question|section|exercise|set)\s*([A-Za-z0-9\-]+)?$/i);
-            if (!match) return null;
-            const label = match[1].toLowerCase();
-            const value = text;
-            if (label === 'unit' || label === 'chapter') return { type: 'unit', value };
-            if (label === 'part') return { type: 'part', value };
-            if (label === 'question') return { type: 'question', value };
-            return { type: 'section', value };
+            const heading = inferHeadingType(line);
+            if (!heading || heading.kind === 'SUBTITLE') return null;
+            if (heading.kind === 'DOCUMENT_TITLE') return { type: 'section', value: heading.label };
+            if (heading.kind === 'PAPER') return { type: 'section', value: heading.label };
+            if (heading.kind === 'SECTION') return { type: 'part', value: heading.label };
+            if (['QUESTION', 'QUESTION_RANGE', 'PASSAGE', 'PASSAGE_SUBSECTION', 'TEXT', 'OPTIONS', 'INSTRUCTIONS', 'UNKNOWN'].includes(heading.kind)) return { type: 'question', value: heading.label };
+            return null;
         };
 
         const splitChineseTail = (text) => {
@@ -242,6 +288,7 @@ const normalizeAnswer = (text) => String(text || '')
             const duplicate = existingWords.find(word => makeImportKey(word.word, word.category) === makeImportKey(item.word, item.category));
             if (duplicate) return { status: 'Duplicate', tone: 'amber', message: duplicateAction === 'skip' ? 'Will skip existing' : duplicateAction === 'update' ? 'Will update existing' : 'Will keep both' };
             const warnings = [];
+            if (existingWords.some(word => normalizeWordKey(word.word) === normalizeWordKey(item.word))) warnings.push('Existing elsewhere');
             if (!cleanCellText(item.meaning)) warnings.push('Missing meaning');
             if (!cleanCellText(item.mandarin)) warnings.push('Missing Mandarin');
             if (!cleanCellText(item.pronunciation)) warnings.push('No pronunciation');
@@ -283,6 +330,236 @@ const normalizeAnswer = (text) => String(text || '')
                 totalLines: rawLines.filter(line => cleanCellText(line)).length
             };
         };
+
+        const getFolderPathNames = (folderId, folders = []) => {
+            const byId = new Map(folders.map(folder => [folder.id, folder]));
+            const path = [];
+            let current = byId.get(folderId);
+            const seen = new Set();
+            while (current && !seen.has(current.id)) {
+                seen.add(current.id);
+                path.unshift(current.name);
+                current = current.parentId ? byId.get(current.parentId) : null;
+            }
+            return path;
+        };
+
+        const getFolderPath = (folderId, folders = []) => getFolderPathNames(folderId, folders).join(' › ');
+        const makeFolderPathKey = (names = []) => names.map(normalizeCategoryKey).join('>');
+
+        const buildLegacyFolders = (words = [], existingFolders = []) => {
+            const nextFolders = Array.isArray(existingFolders) ? [...existingFolders] : [];
+            const folderByPath = new Map();
+            const ensurePath = (pathNames, type = 'LEGACY') => {
+                let parentId = null;
+                let folder = null;
+                const cleanNames = pathNames.map(cleanCellText).filter(Boolean);
+                cleanNames.forEach((name, index) => {
+                    const pathKey = makeFolderPathKey(cleanNames.slice(0, index + 1));
+                    folder = folderByPath.get(pathKey) || nextFolders.find(item => item.parentId === parentId && normalizeCategoryKey(item.name) === normalizeCategoryKey(name));
+                    if (!folder) {
+                        folder = { id: makeId('folder'), name, parentId, type: index === cleanNames.length - 1 ? type : 'LEGACY_PARENT', createdAt: new Date().toISOString() };
+                        nextFolders.push(folder);
+                    }
+                    folderByPath.set(pathKey, folder);
+                    parentId = folder.id;
+                });
+                return folder;
+            };
+
+            nextFolders.forEach(folder => {
+                const path = getFolderPathNames(folder.id, nextFolders);
+                if (path.length) folderByPath.set(makeFolderPathKey(path), folder);
+            });
+
+            const nextWords = words.map(word => {
+                if (word.folderId && nextFolders.some(folder => folder.id === word.folderId)) return word;
+                const category = cleanCellText(word.category || 'General');
+                const folder = ensurePath(category.split('›').map(cleanCellText).filter(Boolean), 'LEGACY');
+                return { ...word, folderId: folder?.id, category };
+            });
+
+            return { folders: nextFolders, words: nextWords };
+        };
+
+        const createStructuredParser = (existingFolders = []) => {
+            const proposedFolders = [];
+            const proposedByPath = new Map();
+            const existingByPath = new Map();
+            existingFolders.forEach(folder => {
+                const path = getFolderPathNames(folder.id, existingFolders);
+                if (path.length) existingByPath.set(makeFolderPathKey(path), folder);
+            });
+
+            const ensureFolder = (pathNames, draft = {}) => {
+                const cleanNames = pathNames.map(cleanCellText).filter(Boolean);
+                if (!cleanNames.length) return null;
+                const pathKey = makeFolderPathKey(cleanNames);
+                let folder = proposedByPath.get(pathKey);
+                if (folder) {
+                    folder.sourcePage = folder.sourcePage || draft.sourcePage || null;
+                    folder.rawHeading = folder.rawHeading || draft.rawHeading || '';
+                    return folder;
+                }
+                const parent = cleanNames.length > 1 ? ensureFolder(cleanNames.slice(0, -1), { type: 'AUTO_PARENT' }) : null;
+                const existing = existingByPath.get(pathKey);
+                folder = {
+                    id: makeId('proposed-folder'),
+                    name: cleanNames[cleanNames.length - 1],
+                    parentId: parent?.id || null,
+                    type: draft.type || 'SECTION',
+                    rawHeading: draft.rawHeading || '',
+                    sourcePage: draft.sourcePage || null,
+                    lineNumber: draft.lineNumber || null,
+                    needsReview: Boolean(draft.needsReview),
+                    existingFolderId: existing?.id || null,
+                    ignored: false
+                };
+                proposedFolders.push(folder);
+                proposedByPath.set(pathKey, folder);
+                return folder;
+            };
+
+            return { proposedFolders, ensureFolder };
+        };
+
+        const parseStructuredVocabularyInput = (inputText, fallbackCategory = 'General', existingFolders = []) => {
+            const rawLines = String(inputText || '').split(/\r?\n/);
+            const parser = createStructuredParser(existingFolders);
+            const context = { document: '', paper: '', section: '', content: '', passage: '', sourcePage: null };
+            const headings = [];
+            const unknownHeadings = [];
+            const unrecognised = [];
+            const items = [];
+            let documentLocked = false;
+
+            const currentPath = () => [
+                context.document || fallbackCategory || 'General',
+                context.paper,
+                context.section,
+                context.passage && context.content !== context.passage ? context.passage : '',
+                context.content
+            ].filter(Boolean);
+
+            const applyHeading = (heading, lineNumber) => {
+                headings.push({ lineNumber, text: heading.rawHeading || heading.label, ...heading });
+                if (heading.kind === 'PAGE_CONTEXT') {
+                    context.sourcePage = heading.sourcePage || context.sourcePage;
+                    heading.contexts.forEach(part => applyHeading({ ...part, sourcePage: context.sourcePage, fromPageContext: true }, lineNumber));
+                    return;
+                }
+                if (heading.kind === 'SUBTITLE') return;
+                if (heading.kind === 'DOCUMENT_TITLE') {
+                    context.document = heading.label;
+                    documentLocked = true;
+                    context.paper = '';
+                    context.section = '';
+                    context.content = '';
+                    context.passage = '';
+                    parser.ensureFolder([context.document], { type: 'DOCUMENT_TITLE', rawHeading: heading.rawHeading, lineNumber, sourcePage: context.sourcePage });
+                    return;
+                }
+                if (!context.document) {
+                    context.document = cleanCellText(fallbackCategory || 'General');
+                    parser.ensureFolder([context.document], { type: 'DOCUMENT_TITLE', rawHeading: context.document, lineNumber, sourcePage: context.sourcePage });
+                }
+                if (heading.kind === 'PAPER') {
+                    context.paper = heading.label;
+                    context.section = '';
+                    context.content = '';
+                    context.passage = '';
+                    parser.ensureFolder([context.document, context.paper], { type: 'PAPER', rawHeading: heading.rawHeading, lineNumber, sourcePage: context.sourcePage });
+                    return;
+                }
+                if (heading.kind === 'SECTION') {
+                    context.section = heading.label;
+                    context.content = '';
+                    context.passage = '';
+                    parser.ensureFolder([context.document, context.paper, context.section].filter(Boolean), { type: 'SECTION', rawHeading: heading.rawHeading, lineNumber, sourcePage: context.sourcePage });
+                    return;
+                }
+                if (heading.kind === 'PASSAGE') {
+                    context.content = heading.label;
+                    context.passage = heading.label;
+                    parser.ensureFolder(currentPath(), { type: 'PASSAGE', rawHeading: heading.rawHeading, lineNumber, sourcePage: context.sourcePage });
+                    return;
+                }
+                if (heading.kind === 'PASSAGE_SUBSECTION' && context.passage) {
+                    const passagePath = [context.document, context.paper, context.section, context.passage].filter(Boolean);
+                    context.content = heading.label;
+                    parser.ensureFolder([...passagePath, heading.label], { type: 'PASSAGE_SUBSECTION', rawHeading: heading.rawHeading, lineNumber, sourcePage: context.sourcePage });
+                    return;
+                }
+                if (heading.kind === 'INSTRUCTIONS') {
+                    context.content = heading.label || 'Instructions';
+                    parser.ensureFolder(currentPath(), { type: 'INSTRUCTIONS', rawHeading: heading.rawHeading, lineNumber, sourcePage: context.sourcePage });
+                    return;
+                }
+                if (['QUESTION', 'QUESTION_RANGE', 'TEXT', 'OPTIONS', 'UNKNOWN'].includes(heading.kind)) {
+                    context.passage = '';
+                    context.content = heading.label;
+                    const folder = parser.ensureFolder(currentPath(), { type: heading.kind, rawHeading: heading.rawHeading, lineNumber, sourcePage: context.sourcePage, needsReview: heading.needsReview });
+                    if (heading.kind === 'UNKNOWN') unknownHeadings.push({ ...heading, folderId: folder?.id, lineNumber });
+                }
+            };
+
+            rawLines.forEach((rawLine, index) => {
+                const lineNumber = index + 1;
+                const cleaned = cleanCellText(rawLine);
+                if (!cleaned) return;
+                const nextMeaningful = rawLines.slice(index + 1).map(cleanCellText).find(Boolean) || '';
+                const nextLooksVocabulary = Boolean(parseVocabularyLine(nextMeaningful, lineNumber + 1, { section: '', unit: fallbackCategory, part: '', question: '' }, fallbackCategory));
+                let heading = inferHeadingType(cleaned, index, documentLocked);
+                if (heading?.kind === 'DOCUMENT_TITLE' && nextLooksVocabulary) {
+                    heading = { kind: 'UNKNOWN', label: normalizeDash(cleaned), rawHeading: cleaned, level: 3, needsReview: true };
+                }
+                if (heading) {
+                    applyHeading(heading, lineNumber);
+                    return;
+                }
+                if (!context.document) {
+                    const maybeTitle = inferHeadingType(cleaned, index, false);
+                    if (maybeTitle?.kind === 'DOCUMENT_TITLE') {
+                        applyHeading(maybeTitle, lineNumber);
+                        return;
+                    }
+                    context.document = cleanCellText(fallbackCategory || 'General');
+                    parser.ensureFolder([context.document], { type: 'DOCUMENT_TITLE', rawHeading: context.document, lineNumber, sourcePage: context.sourcePage });
+                }
+                const folder = parser.ensureFolder(currentPath(), { type: 'VOCABULARY_CONTAINER', sourcePage: context.sourcePage });
+                const item = parseVocabularyLine(rawLine, lineNumber, {
+                    section: context.paper,
+                    unit: context.document,
+                    part: context.section,
+                    question: context.content
+                }, getFolderPath(folder?.id, parser.proposedFolders) || fallbackCategory);
+                if (item) {
+                    item.folderId = folder?.id;
+                    item.category = getFolderPath(folder?.id, parser.proposedFolders) || item.category;
+                    item.sourcePage = context.sourcePage || null;
+                    item.rawHeading = folder?.rawHeading || '';
+                    items.push(item);
+                } else {
+                    unrecognised.push({ id: `unrecognised-${lineNumber}`, lineNumber, text: rawLine, location: getFolderPath(folder?.id, parser.proposedFolders) });
+                }
+            });
+
+            return {
+                items,
+                folders: parser.proposedFolders,
+                headings,
+                unknownHeadings,
+                unrecognised,
+                documentTitle: context.document || fallbackCategory || 'General',
+                totalLines: rawLines.filter(line => cleanCellText(line)).length
+            };
+        };
+
+        const flattenFolderOptions = (folders = []) => folders.map(folder => ({
+            id: folder.id,
+            label: getFolderPath(folder.id, folders) || folder.name,
+            depth: Math.max(0, getFolderPathNames(folder.id, folders).length - 1)
+        })).sort((a, b) => a.label.localeCompare(b.label));
 
         function CategorySelectionScreen({ words, onSelect, title }) {
             const [selectedCats, setSelectedCats] = useState(new Set());
@@ -1083,15 +1360,18 @@ const normalizeAnswer = (text) => String(text || '')
           );
         }
 
-        function AddMode({ words, setWords, setActiveTab }) {
+        function AddMode({ words, setWords, folders, setFolders, setActiveTab }) {
             const [inputText, setInputText] = useState('');
-            const [category, setCategory] = useState('Unit 1');
+            const [category, setCategory] = useState('English Trial 2026 Pahang');
             const [analysis, setAnalysis] = useState(null);
             const [preview, setPreview] = useState([]);
+            const [proposedFolders, setProposedFolders] = useState([]);
             const [selectedPreviewIds, setSelectedPreviewIds] = useState(new Set());
-            const [bulkCategory, setBulkCategory] = useState('');
+            const [bulkFolderId, setBulkFolderId] = useState('');
             const [duplicateAction, setDuplicateAction] = useState('skip');
             const [importResult, setImportResult] = useState(null);
+            const [previewTab, setPreviewTab] = useState('structure');
+            const [collapsedFolderIds, setCollapsedFolderIds] = useState(new Set());
             const fileInputRef = useRef(null);
 
             const previewStatuses = useMemo(() => preview.map(item => ({
@@ -1122,12 +1402,46 @@ const normalizeAnswer = (text) => String(text || '')
                 return Array.from(cats).sort();
             }, [words, preview]);
 
+            const folderOptions = useMemo(() => flattenFolderOptions(proposedFolders), [proposedFolders]);
+            const proposedById = useMemo(() => new Map(proposedFolders.map(folder => [folder.id, folder])), [proposedFolders]);
+            const folderWordCounts = useMemo(() => {
+                const direct = new Map();
+                preview.forEach(item => {
+                    if (!item.ignored && item.folderId) direct.set(item.folderId, (direct.get(item.folderId) || 0) + 1);
+                });
+                const total = new Map(direct);
+                proposedFolders.forEach(folder => {
+                    const count = direct.get(folder.id) || 0;
+                    let parentId = folder.parentId;
+                    while (parentId) {
+                        total.set(parentId, (total.get(parentId) || 0) + count);
+                        parentId = proposedById.get(parentId)?.parentId;
+                    }
+                });
+                return { direct, total };
+            }, [preview, proposedFolders, proposedById]);
+
+            const structureSummary = useMemo(() => {
+                const paperCount = proposedFolders.filter(folder => folder.type === 'PAPER').length;
+                const sectionCount = proposedFolders.filter(folder => ['SECTION', 'INSTRUCTIONS', 'QUESTION', 'QUESTION_RANGE', 'PASSAGE', 'PASSAGE_SUBSECTION', 'TEXT', 'OPTIONS', 'UNKNOWN'].includes(folder.type)).length;
+                const contentCount = proposedFolders.filter(folder => !['DOCUMENT_TITLE', 'AUTO_PARENT'].includes(folder.type)).length;
+                return {
+                    paperCount,
+                    sectionCount,
+                    contentCount,
+                    existingFolders: proposedFolders.filter(folder => folder.existingFolderId).length,
+                    needsReview: proposedFolders.filter(folder => folder.needsReview && !folder.ignored).length
+                };
+            }, [proposedFolders]);
+
             const handleParse = () => {
-                const parsed = parseVocabularyInput(inputText, category);
+                const parsed = parseStructuredVocabularyInput(inputText, category, folders);
                 setAnalysis(parsed);
                 setPreview(parsed.items);
+                setProposedFolders(parsed.folders);
                 setSelectedPreviewIds(new Set());
                 setImportResult(null);
+                setPreviewTab('structure');
             };
 
             const handleJsonFileChange = (e) => {
@@ -1138,7 +1452,27 @@ const normalizeAnswer = (text) => String(text || '')
                     try {
                         const parsed = JSON.parse(event.target.result);
                         if (!Array.isArray(parsed)) throw new Error('Backup file must be an array.');
-                        const items = parsed.map((item, index) => ({
+                        const draftFolders = [];
+                        const folderByPath = new Map();
+                        const ensureDraftFolder = (pathText) => {
+                            const names = cleanCellText(pathText || category || 'General').split('›').map(cleanCellText).filter(Boolean);
+                            let parentId = null;
+                            let folder = null;
+                            names.forEach((name, depth) => {
+                                const pathKey = makeFolderPathKey(names.slice(0, depth + 1));
+                                folder = folderByPath.get(pathKey);
+                                if (!folder) {
+                                    folder = { id: makeId('json-folder'), name, parentId, type: depth === 0 ? 'DOCUMENT_TITLE' : 'SECTION', rawHeading: name, sourcePage: null, lineNumber: index + 1, needsReview: false, existingFolderId: null, ignored: false };
+                                    draftFolders.push(folder);
+                                    folderByPath.set(pathKey, folder);
+                                }
+                                parentId = folder.id;
+                            });
+                            return folder;
+                        };
+                        const items = parsed.map((item, index) => {
+                            const folder = ensureDraftFolder(item.category || category || 'General');
+                            return ({
                             id: `json-preview-${index}-${Math.random().toString(36).slice(2)}`,
                             lineNumber: index + 1,
                             rawSource: JSON.stringify(item),
@@ -1146,19 +1480,25 @@ const normalizeAnswer = (text) => String(text || '')
                             pronunciation: cleanCellText(item.pronunciation),
                             meaning: cleanCellText(item.meaning),
                             mandarin: cleanCellText(item.mandarin),
-                            category: cleanCellText(item.category || category || 'General'),
+                            category: getFolderPath(folder.id, draftFolders) || cleanCellText(item.category || category || 'General'),
+                            folderId: folder.id,
                             section: cleanCellText(item.section),
                             part: cleanCellText(item.part),
                             question: cleanCellText(item.question),
+                            sourcePage: item.sourcePage || null,
+                            rawHeading: cleanCellText(item.rawHeading),
                             ignored: false
-                        })).filter(item => item.word || item.mandarin || item.meaning);
-                        setAnalysis({ items, headings: [], unrecognised: [], totalLines: parsed.length, source: 'json' });
+                        });}).filter(item => item.word || item.mandarin || item.meaning);
+                        setAnalysis({ items, folders: draftFolders, headings: [], unknownHeadings: [], unrecognised: [], totalLines: parsed.length, source: 'json', documentTitle: category || 'JSON Backup' });
                         setPreview(items);
+                        setProposedFolders(draftFolders);
                         setSelectedPreviewIds(new Set());
                         setImportResult(null);
+                        setPreviewTab('vocabulary');
                     } catch (error) {
-                        setAnalysis({ items: [], headings: [], unrecognised: [{ id: 'json-error', lineNumber: 1, text: 'Invalid JSON backup file.' }], totalLines: 1, source: 'json' });
+                        setAnalysis({ items: [], folders: [], headings: [], unknownHeadings: [], unrecognised: [{ id: 'json-error', lineNumber: 1, text: 'Invalid JSON backup file.' }], totalLines: 1, source: 'json' });
                         setPreview([]);
+                        setProposedFolders([]);
                     }
                     e.target.value = '';
                 };
@@ -1182,10 +1522,60 @@ const normalizeAnswer = (text) => String(text || '')
                 setSelectedPreviewIds(prev => prev.size === visibleIds.length ? new Set() : new Set(visibleIds));
             };
 
-            const applyBulkCategory = () => {
-                const nextCategory = cleanCellText(bulkCategory);
-                if (!nextCategory || selectedPreviewIds.size === 0) return;
-                setPreview(current => current.map(item => selectedPreviewIds.has(item.id) ? { ...item, category: nextCategory } : item));
+            const updateFolderName = (folderId, name) => {
+                setProposedFolders(current => current.map(folder => folder.id === folderId ? { ...folder, name } : folder));
+                setPreview(current => current.map(item => item.folderId ? { ...item, category: getFolderPath(item.folderId, proposedFolders.map(folder => folder.id === folderId ? { ...folder, name } : folder)) } : item));
+            };
+
+            const moveFolder = (folderId, parentId) => {
+                if (folderId === parentId) return;
+                const descendantIds = new Set();
+                const collect = (id) => {
+                    proposedFolders.filter(folder => folder.parentId === id).forEach(child => {
+                        descendantIds.add(child.id);
+                        collect(child.id);
+                    });
+                };
+                collect(folderId);
+                if (descendantIds.has(parentId)) return;
+                const nextFolders = proposedFolders.map(folder => folder.id === folderId ? { ...folder, parentId: parentId || null } : folder);
+                setProposedFolders(nextFolders);
+                setPreview(current => current.map(item => item.folderId ? { ...item, category: getFolderPath(item.folderId, nextFolders) } : item));
+            };
+
+            const markFolder = (folderId, changes) => {
+                setProposedFolders(current => current.map(folder => folder.id === folderId ? { ...folder, ...changes } : folder));
+            };
+
+            const treatUnknownAsVocabulary = (folderId) => {
+                const folder = proposedById.get(folderId);
+                if (!folder) return;
+                const parentPath = getFolderPathNames(folder.parentId, proposedFolders);
+                const parentFolderId = folder.parentId || proposedFolders.find(item => !item.parentId)?.id || folderId;
+                setPreview(current => [{
+                    id: makeId('preview-vocab'),
+                    lineNumber: folder.lineNumber || 0,
+                    rawSource: folder.rawHeading || folder.name,
+                    word: folder.name,
+                    pronunciation: '',
+                    meaning: '',
+                    mandarin: '',
+                    category: parentPath.join(' › ') || folder.name,
+                    folderId: parentFolderId,
+                    section: '',
+                    part: '',
+                    question: '',
+                    sourcePage: folder.sourcePage || null,
+                    rawHeading: folder.rawHeading || '',
+                    ignored: false
+                }, ...current]);
+                markFolder(folderId, { ignored: true, needsReview: false });
+            };
+
+            const applyBulkFolder = () => {
+                if (!bulkFolderId || selectedPreviewIds.size === 0) return;
+                const nextCategory = getFolderPath(bulkFolderId, proposedFolders);
+                setPreview(current => current.map(item => selectedPreviewIds.has(item.id) ? { ...item, folderId: bulkFolderId, category: nextCategory } : item));
             };
 
             const ignoreSelected = () => {
@@ -1213,9 +1603,12 @@ const normalizeAnswer = (text) => String(text || '')
                 pronunciation: cleanCellText(item.pronunciation),
                 mandarin: cleanCellText(item.mandarin),
                 category: cleanCellText(item.category || 'General'),
+                folderId: item.finalFolderId || item.folderId || null,
                 section: cleanCellText(item.section),
                 part: cleanCellText(item.part),
                 question: cleanCellText(item.question),
+                sourcePage: item.sourcePage || null,
+                rawHeading: item.rawHeading || '',
                 rawSource: item.rawSource || '',
                 importBatchId: batchId,
                 createdAt: new Date().toISOString()
@@ -1224,15 +1617,52 @@ const normalizeAnswer = (text) => String(text || '')
             const importPreviewItems = () => {
                 const batchId = `batch-${Date.now()}`;
                 const previousWords = words;
+                const previousFolders = folders;
                 let importedCount = 0;
                 let updatedCount = 0;
                 let skippedCount = 0;
+                let createdFoldersCount = 0;
+
+                const nextFolders = [...folders];
+                const folderIdMap = new Map();
+                const realPathMap = new Map();
+                nextFolders.forEach(folder => {
+                    const path = getFolderPathNames(folder.id, nextFolders);
+                    if (path.length) realPathMap.set(makeFolderPathKey(path), folder);
+                });
+
+                const sortedFolders = [...proposedFolders].filter(folder => !folder.ignored).sort((a, b) => getFolderPathNames(a.id, proposedFolders).length - getFolderPathNames(b.id, proposedFolders).length);
+                sortedFolders.forEach(folder => {
+                    const proposedPath = getFolderPathNames(folder.id, proposedFolders);
+                    const pathKey = makeFolderPathKey(proposedPath);
+                    let realFolder = realPathMap.get(pathKey);
+                    if (!realFolder) {
+                        const parentRealId = folder.parentId ? folderIdMap.get(folder.parentId) : null;
+                        realFolder = {
+                            id: makeId('folder'),
+                            name: cleanCellText(folder.name),
+                            parentId: parentRealId || null,
+                            type: folder.type,
+                            rawHeading: folder.rawHeading || '',
+                            sourcePage: folder.sourcePage || null,
+                            importBatchId: batchId,
+                            createdAt: new Date().toISOString()
+                        };
+                        nextFolders.push(realFolder);
+                        realPathMap.set(pathKey, realFolder);
+                        createdFoldersCount += 1;
+                    }
+                    folderIdMap.set(folder.id, realFolder.id);
+                });
 
                 const nextWords = [...words];
                 preview.forEach(item => {
-                    const status = evaluateImportStatus(item, nextWords, duplicateAction).status;
+                    const realFolderId = folderIdMap.get(item.folderId) || item.folderId || null;
+                    const categoryPath = realFolderId ? getFolderPath(realFolderId, nextFolders) : cleanCellText(item.category || 'General');
+                    const draftItem = { ...item, finalFolderId: realFolderId, category: categoryPath };
+                    const status = evaluateImportStatus(draftItem, nextWords, duplicateAction).status;
                     if (['Error', 'Ignored'].includes(status)) return;
-                    const existingIndex = nextWords.findIndex(word => makeImportKey(word.word, word.category) === makeImportKey(item.word, item.category));
+                    const existingIndex = nextWords.findIndex(word => makeImportKey(word.word, word.category) === makeImportKey(draftItem.word, draftItem.category));
                     if (existingIndex !== -1 && duplicateAction === 'skip') {
                         skippedCount += 1;
                         return;
@@ -1244,30 +1674,36 @@ const normalizeAnswer = (text) => String(text || '')
                             meaning: cleanCellText(item.meaning),
                             pronunciation: cleanCellText(item.pronunciation),
                             mandarin: cleanCellText(item.mandarin),
-                            category: cleanCellText(item.category || 'General'),
+                            category: categoryPath,
+                            folderId: realFolderId,
                             section: cleanCellText(item.section),
                             part: cleanCellText(item.part),
                             question: cleanCellText(item.question),
+                            sourcePage: item.sourcePage || null,
+                            rawHeading: item.rawHeading || nextWords[existingIndex].rawHeading || '',
                             rawSource: item.rawSource || nextWords[existingIndex].rawSource || '',
                             updatedAt: new Date().toISOString()
                         };
                         updatedCount += 1;
                         return;
                     }
-                    nextWords.push(createWordFromPreview(item, batchId));
+                    nextWords.push(createWordFromPreview(draftItem, batchId));
                     importedCount += 1;
                 });
 
                 setWords(nextWords);
-                setImportResult({ importedCount, updatedCount, skippedCount, batchId, previousWords });
+                setFolders(nextFolders);
+                setImportResult({ importedCount, updatedCount, skippedCount, createdFoldersCount, batchId, previousWords, previousFolders });
                 setPreview([]);
                 setAnalysis(null);
+                setProposedFolders([]);
                 setSelectedPreviewIds(new Set());
             };
 
             const undoLastImport = () => {
                 if (!importResult?.previousWords) return;
                 setWords(importResult.previousWords);
+                setFolders(importResult.previousFolders || folders);
                 setImportResult(null);
             };
 
@@ -1279,15 +1715,58 @@ const normalizeAnswer = (text) => String(text || '')
                 Ignored: 'bg-gray-100 text-gray-500 border-gray-200'
             };
 
+            const renderFolderTree = (parentId = null, depth = 0) => {
+                const children = proposedFolders.filter(folder => folder.parentId === parentId && !folder.ignored);
+                return children.map(folder => {
+                    const hasChildren = proposedFolders.some(item => item.parentId === folder.id && !item.ignored);
+                    const collapsed = collapsedFolderIds.has(folder.id);
+                    return (
+                        <div key={folder.id} className="border-l border-indigo-100" style={{ marginLeft: depth ? 16 : 0 }}>
+                            <div className={`p-3 my-2 rounded-2xl border ${folder.needsReview ? 'bg-yellow-50 border-yellow-200' : folder.existingFolderId ? 'bg-emerald-50 border-emerald-100' : 'bg-white border-gray-100'}`}>
+                                <div className="flex flex-col xl:flex-row xl:items-center gap-3">
+                                    <div className="flex items-center gap-2 flex-1 min-w-0">
+                                        <button type="button" onClick={() => setCollapsedFolderIds(prev => { const next = new Set(prev); next.has(folder.id) ? next.delete(folder.id) : next.add(folder.id); return next; })} className="w-8 h-8 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center shrink-0">
+                                            {hasChildren ? (collapsed ? <ChevronRight size={18} /> : <ChevronLeft size={18} className="-rotate-90" />) : <Folder size={18} />}
+                                        </button>
+                                        <input value={folder.name} onChange={e => updateFolderName(folder.id, e.target.value)} className="flex-1 min-w-[180px] p-2 rounded-lg bg-white border-2 border-transparent focus:border-indigo-500 outline-none font-bold text-gray-800" />
+                                    </div>
+                                    <div className="flex flex-wrap items-center gap-2 text-xs font-black">
+                                        <span className="px-2 py-1 rounded-lg bg-indigo-50 text-indigo-600">{folder.type}</span>
+                                        <span className="px-2 py-1 rounded-lg bg-gray-100 text-gray-600">{folderWordCounts.total.get(folder.id) || 0} words</span>
+                                        {folder.sourcePage && <span className="px-2 py-1 rounded-lg bg-gray-100 text-gray-500">Page {folder.sourcePage}</span>}
+                                        {folder.existingFolderId && <span className="px-2 py-1 rounded-lg bg-emerald-100 text-emerald-700">Existing Folder</span>}
+                                        {folder.needsReview && <span className="px-2 py-1 rounded-lg bg-yellow-100 text-yellow-700">Needs Review</span>}
+                                    </div>
+                                </div>
+                                <div className="flex flex-col lg:flex-row gap-2 mt-3">
+                                    <select value={folder.parentId || ''} onChange={e => moveFolder(folder.id, e.target.value)} className="px-3 py-2 rounded-lg bg-gray-50 border-2 border-transparent focus:border-indigo-500 outline-none text-sm font-bold">
+                                        <option value="">Top level</option>
+                                        {folderOptions.filter(option => option.id !== folder.id).map(option => <option key={option.id} value={option.id}>{option.label}</option>)}
+                                    </select>
+                                    {folder.needsReview && (
+                                        <div className="flex flex-wrap gap-2">
+                                            <button onClick={() => markFolder(folder.id, { needsReview: false, type: 'SECTION' })} className="px-3 py-2 rounded-lg bg-yellow-500 text-white font-bold text-sm">Treat as Folder</button>
+                                            <button onClick={() => treatUnknownAsVocabulary(folder.id)} className="px-3 py-2 rounded-lg bg-white border border-yellow-200 text-yellow-700 font-bold text-sm">Treat as Vocabulary</button>
+                                            <button onClick={() => markFolder(folder.id, { ignored: true, needsReview: false })} className="px-3 py-2 rounded-lg bg-white border border-gray-200 text-gray-500 font-bold text-sm">Ignore</button>
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                            {hasChildren && !collapsed && renderFolderTree(folder.id, depth + 1)}
+                        </div>
+                    );
+                });
+            };
+
             return (
                 <div className="h-full flex flex-col p-4 md:p-6 max-w-6xl mx-auto w-full overflow-y-auto custom-scrollbar">
                     <h2 className="text-3xl font-black text-gray-800 mb-2">Import Vocabulary</h2>
-                    <p className="text-sm text-gray-400 font-medium mb-6">Paste, analyse, edit problems, then import only the valid vocabulary.</p>
+                    <p className="text-sm text-gray-400 font-medium mb-6">Paste a structured vocabulary document, review the folder tree, then import.</p>
 
                     {importResult && (
                         <div className="bg-emerald-50 border-2 border-emerald-100 rounded-3xl p-5 mb-6">
-                            <h3 className="text-xl font-black text-emerald-800 mb-1">{importResult.importedCount + importResult.updatedCount} vocabulary items imported successfully.</h3>
-                            <p className="text-sm text-emerald-700 mb-4">{importResult.importedCount} new, {importResult.updatedCount} updated, {importResult.skippedCount} skipped.</p>
+                            <h3 className="text-xl font-black text-emerald-800 mb-1">Import Complete</h3>
+                            <p className="text-sm text-emerald-700 mb-4">{importResult.createdFoldersCount || 0} folders created, {importResult.importedCount} vocabulary items imported, {importResult.updatedCount} updated, {importResult.skippedCount} skipped.</p>
                             <div className="flex flex-wrap gap-3">
                                 <button onClick={undoLastImport} className="px-4 py-3 bg-white border-2 border-emerald-200 text-emerald-700 rounded-xl font-bold hover:bg-emerald-100 transition-colors">Undo Last Import</button>
                                 <button onClick={() => setActiveTab('study')} className="px-4 py-3 bg-emerald-600 text-white rounded-xl font-bold shadow-sm hover:bg-emerald-700 transition-colors">Done</button>
@@ -1300,20 +1779,20 @@ const normalizeAnswer = (text) => String(text || '')
                             <div className="flex items-center gap-3 mb-4">
                                 <div className="w-11 h-11 bg-indigo-100 text-indigo-600 rounded-2xl flex items-center justify-center"><Plus size={22} /></div>
                                 <div>
-                                    <h3 className="text-xl font-black text-gray-800">Smart Paste</h3>
-                                    <p className="text-xs text-gray-400 font-bold">From ChatGPT, notes, documents, or spreadsheet rows</p>
+                                    <h3 className="text-xl font-black text-gray-800">Smart Entry</h3>
+                                    <p className="text-xs text-gray-400 font-bold">Structured document, paper, part, question, passage, text</p>
                                 </div>
                             </div>
-                            <label className="block text-sm font-bold text-gray-400 uppercase tracking-widest mb-2">Import into</label>
+                            <label className="block text-sm font-bold text-gray-400 uppercase tracking-widest mb-2">Default Main Folder</label>
                             <input value={category} onChange={e => setCategory(e.target.value)} list="import-category-options" className="w-full p-4 bg-gray-50 rounded-2xl border-2 border-transparent focus:border-indigo-500 outline-none mb-4 font-bold" placeholder="e.g. Form 2 Unit 6" />
                             <datalist id="import-category-options">
                                 {existingCategories.map(cat => <option key={cat} value={cat} />)}
                             </datalist>
 
-                            <label className="block text-sm font-bold text-gray-400 uppercase tracking-widest mb-2">Paste Vocabulary Here</label>
-                            <p className="text-xs text-gray-400 mb-2">Supports brackets, pronunciation, pipes, dashes, numbered lists, Unit / Part / Question headings, and spreadsheet copy-paste.</p>
-                            <textarea value={inputText} onChange={e => setInputText(e.target.value)} className="w-full h-56 p-4 bg-gray-50 rounded-2xl border-2 border-transparent focus:border-indigo-500 outline-none font-mono mb-4 text-sm" placeholder={"Unit 3\n\nQuestion 1\n1. encourage /ɪnˈkʌrɪdʒ/ [to motivate] 鼓励\n2. participate | to take part | 参加"} />
-                            <button onClick={handleParse} className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold shadow-lg hover:bg-indigo-700 transition-colors">Analyse Vocabulary</button>
+                            <label className="block text-sm font-bold text-gray-400 uppercase tracking-widest mb-2">Paste Structured Vocabulary</label>
+                            <p className="text-xs text-gray-400 mb-2">Paper, Part, Question, Passage, Text, Options, headings, and vocabulary rows are analysed together.</p>
+                            <textarea value={inputText} onChange={e => setInputText(e.target.value)} className="w-full h-72 p-4 bg-gray-50 rounded-2xl border-2 border-transparent focus:border-indigo-500 outline-none font-mono mb-4 text-sm" placeholder={"English Trial 2026 Pahang\n\nPage 1 - Paper 1 - Part 1 - Questions 1-4\n\nPart 1 - Instructions\n1. stimuli [information used for questions] 题目材料\n\nQuestion 1 - School Recycling Sale\n1. organise [to plan and arrange] 组织；安排"} />
+                            <button onClick={handleParse} className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold shadow-lg hover:bg-indigo-700 transition-colors">Analyse Structure</button>
                         </div>
 
                         <div className="bg-white p-5 md:p-6 rounded-3xl shadow-sm border">
@@ -1324,7 +1803,7 @@ const normalizeAnswer = (text) => String(text || '')
                                     <p className="text-xs text-gray-400 font-bold">Restore or merge an exported backup safely</p>
                                 </div>
                             </div>
-                            <p className="text-sm text-gray-500 mb-5">JSON backup import now opens the same duplicate-checking preview before anything is written into your collection.</p>
+                            <p className="text-sm text-gray-500 mb-5">JSON backup import also checks duplicates before anything is written into your collection.</p>
                             <input type="file" accept=".json" ref={fileInputRef} onChange={handleJsonFileChange} className="hidden" />
                             <button onClick={() => fileInputRef.current.click()} className="w-full py-4 bg-white border-2 border-emerald-100 text-emerald-600 rounded-2xl font-bold hover:bg-emerald-50 transition-colors">
                                 Choose JSON File
@@ -1336,10 +1815,13 @@ const normalizeAnswer = (text) => String(text || '')
                         <div className="bg-indigo-50 rounded-3xl p-4 md:p-6 border-2 border-indigo-100 mb-6">
                             <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 mb-5">
                                 <div>
-                                    <h3 className="text-2xl font-black text-indigo-950">{preview.length} vocabulary items detected</h3>
-                                    <p className="text-sm text-indigo-700 font-medium">{analysis.totalLines} lines processed, {analysis.headings.length} headings detected, {analysis.unrecognised.length} unrecognised lines.</p>
+                                    <h3 className="text-2xl font-black text-indigo-950">{analysis.documentTitle || category}</h3>
+                                    <p className="text-sm text-indigo-700 font-medium">{analysis.totalLines} relevant lines processed, {preview.length} vocabulary items, {analysis.headings.length} headings recognised, {analysis.unrecognised.length} unknown lines.</p>
                                 </div>
-                                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-sm">
+                                <div className="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-8 gap-2 text-sm">
+                                    <div className="px-3 py-2 rounded-xl border font-black text-center bg-white text-indigo-700 border-indigo-100">{structureSummary.paperCount} Papers</div>
+                                    <div className="px-3 py-2 rounded-xl border font-black text-center bg-white text-indigo-700 border-indigo-100">{structureSummary.sectionCount} Sections</div>
+                                    <div className="px-3 py-2 rounded-xl border font-black text-center bg-white text-indigo-700 border-indigo-100">{structureSummary.contentCount} Folders</div>
                                     {['Ready', 'Warning', 'Duplicate', 'Error', 'Ignored'].map(label => (
                                         <div key={label} className={`px-3 py-2 rounded-xl border font-black text-center ${statusClasses[label]}`}>
                                             {summary[label] || 0} {label}
@@ -1376,8 +1858,11 @@ const normalizeAnswer = (text) => String(text || '')
                                             <span className="text-sm text-gray-400 font-bold">{selectedPreviewIds.size} selected</span>
                                         </div>
                                         <div className="flex flex-wrap gap-2">
-                                            <input value={bulkCategory} onChange={e => setBulkCategory(e.target.value)} className="px-3 py-2 bg-gray-50 rounded-lg border-2 border-transparent focus:border-indigo-500 outline-none text-sm font-bold" placeholder="Move to folder..." />
-                                            <button onClick={applyBulkCategory} className="px-3 py-2 rounded-lg bg-indigo-50 text-indigo-600 font-bold hover:bg-indigo-100 transition-colors">Set Category</button>
+                                            <select value={bulkFolderId} onChange={e => setBulkFolderId(e.target.value)} className="px-3 py-2 bg-gray-50 rounded-lg border-2 border-transparent focus:border-indigo-500 outline-none text-sm font-bold min-w-[240px]">
+                                                <option value="">Move selected to...</option>
+                                                {folderOptions.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}
+                                            </select>
+                                            <button onClick={applyBulkFolder} className="px-3 py-2 rounded-lg bg-indigo-50 text-indigo-600 font-bold hover:bg-indigo-100 transition-colors">Move to Folder</button>
                                             <button onClick={clearPronunciationSelected} className="px-3 py-2 rounded-lg bg-gray-50 text-gray-600 font-bold hover:bg-gray-100 transition-colors">Clear Pronunciation</button>
                                             <button onClick={ignoreSelected} className="px-3 py-2 rounded-lg bg-yellow-50 text-yellow-700 font-bold hover:bg-yellow-100 transition-colors">Ignore Selected</button>
                                             <button onClick={deleteSelected} className="px-3 py-2 rounded-lg bg-red-50 text-red-600 font-bold hover:bg-red-100 transition-colors">Delete Selected</button>
@@ -1386,13 +1871,31 @@ const normalizeAnswer = (text) => String(text || '')
                                 </div>
                             )}
 
+                            <div className="flex flex-wrap gap-2 mb-4">
+                                <button onClick={() => setPreviewTab('structure')} className={`px-4 py-3 rounded-xl font-black ${previewTab === 'structure' ? 'bg-indigo-600 text-white' : 'bg-white text-indigo-600 border border-indigo-100'}`}>Structure Preview</button>
+                                <button onClick={() => setPreviewTab('vocabulary')} className={`px-4 py-3 rounded-xl font-black ${previewTab === 'vocabulary' ? 'bg-indigo-600 text-white' : 'bg-white text-indigo-600 border border-indigo-100'}`}>Vocabulary Preview</button>
+                            </div>
+
+                            {previewTab === 'structure' && (
+                                <div className="bg-white rounded-2xl border border-indigo-100 p-4 mb-4">
+                                    <div className="flex items-center justify-between gap-3 mb-3">
+                                        <h4 className="font-black text-gray-800">Structure Detected</h4>
+                                        <p className="text-xs font-bold text-gray-400">{structureSummary.existingFolders} existing folders reused, {structureSummary.needsReview} need review</p>
+                                    </div>
+                                    <div className="max-h-[620px] overflow-y-auto custom-scrollbar pr-2">
+                                        {renderFolderTree()}
+                                    </div>
+                                </div>
+                            )}
+
+                            {previewTab === 'vocabulary' && (
                             <div className="overflow-x-auto custom-scrollbar bg-white rounded-2xl border border-indigo-100">
                                 <table className="w-full min-w-[980px] text-sm">
                                     <thead className="bg-gray-50 text-gray-400 uppercase tracking-wider text-xs">
                                         <tr>
                                             <th className="p-3 text-left">Select</th>
                                             <th className="p-3 text-left">Status</th>
-                                            <th className="p-3 text-left">Folder / Category</th>
+                                            <th className="p-3 text-left">Location</th>
                                             <th className="p-3 text-left">Word</th>
                                             <th className="p-3 text-left">Pronunciation</th>
                                             <th className="p-3 text-left">Meaning</th>
@@ -1415,17 +1918,18 @@ const normalizeAnswer = (text) => String(text || '')
                                                         <p className="text-[11px] text-gray-400 mt-1 max-w-[140px]">{status.message}</p>
                                                         {item.ignored && <button onClick={() => restoreIgnored(item.id)} className="text-xs text-indigo-600 font-bold mt-1">Restore</button>}
                                                     </td>
-                                                    {['category', 'word', 'pronunciation', 'meaning', 'mandarin'].map(field => (
+                                                    <td className="p-3 align-top">
+                                                        <select value={item.folderId || ''} onChange={e => { const id = e.target.value; updatePreviewItem(item.id, 'folderId', id); updatePreviewItem(item.id, 'category', getFolderPath(id, proposedFolders)); }} className="w-full min-w-[240px] p-2 bg-gray-50 rounded-lg border-2 border-transparent focus:border-indigo-500 outline-none">
+                                                            {folderOptions.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}
+                                                        </select>
+                                                    </td>
+                                                    {['word', 'pronunciation', 'meaning', 'mandarin'].map(field => (
                                                         <td key={field} className="p-3 align-top">
-                                                            <input
-                                                                value={item[field] || ''}
-                                                                onChange={e => updatePreviewItem(item.id, field, e.target.value)}
-                                                                className="w-full min-w-[140px] p-2 bg-gray-50 rounded-lg border-2 border-transparent focus:border-indigo-500 outline-none"
-                                                            />
+                                                            <input value={item[field] || ''} onChange={e => updatePreviewItem(item.id, field, e.target.value)} className="w-full min-w-[140px] p-2 bg-gray-50 rounded-lg border-2 border-transparent focus:border-indigo-500 outline-none" />
                                                         </td>
                                                     ))}
                                                     <td className="p-3 align-top text-xs text-gray-500 min-w-[160px]">
-                                                        {[item.section, item.part, item.question].filter(Boolean).join(' / ') || '-'}
+                                                        {item.sourcePage ? `Page ${item.sourcePage}` : '-'}
                                                         <p className="text-[11px] text-gray-300 mt-1 line-clamp-2">Line {item.lineNumber}: {item.rawSource}</p>
                                                     </td>
                                                 </tr>
@@ -1434,6 +1938,7 @@ const normalizeAnswer = (text) => String(text || '')
                                     </tbody>
                                 </table>
                             </div>
+                            )}
 
                             {analysis.unrecognised.length > 0 && (
                                 <div className="bg-white border border-red-100 rounded-2xl p-4 mt-4">
@@ -1450,13 +1955,13 @@ const normalizeAnswer = (text) => String(text || '')
                             )}
 
                             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mt-5">
-                                <p className="text-sm text-indigo-700 font-bold">Error and ignored rows will not be imported. Duplicate rows follow your selected duplicate rule.</p>
+                                <p className="text-sm text-indigo-700 font-bold">Folders are proposed only until you import. Page headings are saved as metadata, not folders.</p>
                                 <button
                                     onClick={importPreviewItems}
                                     disabled={importableCount === 0}
                                     className="px-6 py-4 bg-emerald-500 text-white rounded-2xl font-black shadow-lg hover:bg-emerald-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                                 >
-                                    Import {importableCount} Words
+                                    Create Folders & Import {importableCount} Words
                                 </button>
                             </div>
                         </div>
@@ -1465,9 +1970,10 @@ const normalizeAnswer = (text) => String(text || '')
             );
         }
 
-        function ListMode({ words, setWords }) {
+        function ListMode({ words, setWords, folders, setFolders }) {
             const [search, setSearch] = useState('');
             const [pendingImport, setPendingImport] = useState(null);
+            const [pendingImportFolders, setPendingImportFolders] = useState([]);
             const [selectedIds, setSelectedIds] = useState(new Set());
             const [showBatchDeleteConfirm, setShowBatchDeleteConfirm] = useState(false);
             const [selectedCategoryFilter, setSelectedCategoryFilter] = useState('All');
@@ -1550,7 +2056,12 @@ const normalizeAnswer = (text) => String(text || '')
             };
 
             const handleDownload = () => {
-                const dataStr = JSON.stringify(words, null, 2);
+                const dataStr = JSON.stringify({
+                    version: 2,
+                    exportedAt: new Date().toISOString(),
+                    folders,
+                    words
+                }, null, 2);
                 const blob = new Blob([dataStr], { type: 'application/json' });
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
@@ -1569,8 +2080,10 @@ const normalizeAnswer = (text) => String(text || '')
                 reader.onload = (event) => {
                     try {
                         const parsed = JSON.parse(event.target.result);
-                        if (Array.isArray(parsed)) {
-                            const validData = parsed.filter(item => item.word).map(item => ({
+                        const incomingWords = Array.isArray(parsed) ? parsed : Array.isArray(parsed.words) ? parsed.words : [];
+                        const incomingFolders = Array.isArray(parsed?.folders) ? parsed.folders : [];
+                        if (Array.isArray(incomingWords)) {
+                            const validData = incomingWords.filter(item => item.word).map(item => ({
                                 ...item,
                                 id: item.id || Date.now() + Math.random(),
                                 word: cleanCellText(item.word),
@@ -1581,6 +2094,7 @@ const normalizeAnswer = (text) => String(text || '')
                             }));
                             if (validData.length > 0) {
                                 setPendingImport(validData);
+                                setPendingImportFolders(incomingFolders);
                             }
                         }
                     } catch (error) {
@@ -1594,29 +2108,61 @@ const normalizeAnswer = (text) => String(text || '')
             const handleImportAction = (action) => {
                 if (action === 'replace') {
                     setWords(pendingImport);
+                    setFolders(pendingImportFolders);
                 } else {
                     const nextWords = [...words];
+                    const nextFolders = [...folders];
+                    const folderIdMap = new Map();
+                    const realPathMap = new Map();
+                    nextFolders.forEach(folder => {
+                        const path = getFolderPathNames(folder.id, nextFolders);
+                        if (path.length) realPathMap.set(makeFolderPathKey(path), folder);
+                    });
+                    pendingImportFolders
+                        .slice()
+                        .sort((a, b) => getFolderPathNames(a.id, pendingImportFolders).length - getFolderPathNames(b.id, pendingImportFolders).length)
+                        .forEach(folder => {
+                            const path = getFolderPathNames(folder.id, pendingImportFolders);
+                            const pathKey = makeFolderPathKey(path);
+                            let realFolder = realPathMap.get(pathKey);
+                            if (!realFolder) {
+                                realFolder = {
+                                    ...folder,
+                                    id: makeId('folder'),
+                                    parentId: folder.parentId ? folderIdMap.get(folder.parentId) : null,
+                                    importedAt: new Date().toISOString()
+                                };
+                                nextFolders.push(realFolder);
+                                realPathMap.set(pathKey, realFolder);
+                            }
+                            folderIdMap.set(folder.id, realFolder.id);
+                        });
                     pendingImport.forEach(item => {
-                        const existingIndex = nextWords.findIndex(word => makeImportKey(word.word, word.category) === makeImportKey(item.word, item.category));
+                        const mappedFolderId = item.folderId ? folderIdMap.get(item.folderId) || item.folderId : null;
+                        const mappedCategory = mappedFolderId ? getFolderPath(mappedFolderId, nextFolders) : item.category;
+                        const mappedItem = { ...item, folderId: mappedFolderId, category: mappedCategory };
+                        const existingIndex = nextWords.findIndex(word => makeImportKey(word.word, word.category) === makeImportKey(mappedItem.word, mappedItem.category));
                         if (existingIndex !== -1 && action === 'skip') return;
                         if (existingIndex !== -1 && action === 'update') {
                             nextWords[existingIndex] = {
                                 ...nextWords[existingIndex],
-                                ...item,
+                                ...mappedItem,
                                 id: nextWords[existingIndex].id,
                                 updatedAt: new Date().toISOString()
                             };
                             return;
                         }
                         nextWords.push({
-                            ...item,
+                            ...mappedItem,
                             id: action === 'keep' || existingIndex === -1 ? Date.now() + Math.random() : item.id,
                             createdAt: item.createdAt || new Date().toISOString()
                         });
                     });
                     setWords(nextWords);
+                    setFolders(nextFolders);
                 }
                 setPendingImport(null);
+                setPendingImportFolders([]);
             };
 
             const filtered = words.filter(w => {
@@ -1884,10 +2430,35 @@ const normalizeAnswer = (text) => String(text || '')
               return [];
             }
           });
+          const [folders, setFolders] = useState(() => {
+            try {
+              const saved = localStorage.getItem('en_vocab_master_folders');
+              const parsed = saved ? JSON.parse(saved) : [];
+              return Array.isArray(parsed) ? parsed : [];
+            } catch (error) {
+              console.warn('Folder data was corrupted, resetting to empty list.', error);
+              return [];
+            }
+          });
 
           useEffect(() => {
             try { localStorage.setItem('en_vocab_master_data', JSON.stringify(words)); } catch (error) { console.warn('Unable to save vocabulary data.', error); }
           }, [words]);
+
+          useEffect(() => {
+            try { localStorage.setItem('en_vocab_master_folders', JSON.stringify(folders)); } catch (error) { console.warn('Unable to save folder data.', error); }
+          }, [folders]);
+
+          useEffect(() => {
+            if (!words.length) return;
+            const needsMigration = words.some(word => !word.folderId) || !folders.length;
+            if (!needsMigration) return;
+            const migrated = buildLegacyFolders(words, folders);
+            const changedFolders = migrated.folders.length !== folders.length;
+            const changedWords = migrated.words.some((word, index) => word.folderId !== words[index]?.folderId);
+            if (changedFolders) setFolders(migrated.folders);
+            if (changedWords) setWords(migrated.words);
+          }, [words, folders]);
 
           useEffect(() => {
             try { localStorage.setItem('evm_user', username); } catch (error) { console.warn('Unable to save student name.', error); }
@@ -1965,8 +2536,8 @@ const normalizeAnswer = (text) => String(text || '')
                     {activeTab === 'study' && <StudyMode words={words} />}
                     {activeTab === 'quiz' && <QuizMode words={words} setIsDirty={setIsCurrentTabDirty} username={username} />}
                     {activeTab === 'spelling' && <SpellingMode words={words} setIsDirty={setIsCurrentTabDirty} username={username} />}
-                    {activeTab === 'add' && <AddMode words={words} setWords={setWords} setActiveTab={setActiveTab} />}
-                    {activeTab === 'list' && <ListMode words={words} setWords={setWords} />}
+                    {activeTab === 'add' && <AddMode words={words} setWords={setWords} folders={folders} setFolders={setFolders} setActiveTab={setActiveTab} />}
+                    {activeTab === 'list' && <ListMode words={words} setWords={setWords} folders={folders} setFolders={setFolders} />}
                 </div>
                 <nav className="md:hidden bg-white border-t flex justify-between shadow-lg z-20 shrink-0 pb-safe overflow-x-auto custom-scrollbar">
                     <NavButton id="study" icon={BookOpen} label="Cards" />
