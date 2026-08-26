@@ -345,6 +345,14 @@ const normalizeAnswer = (text) => String(text || '')
         };
 
         const getFolderPath = (folderId, folders = []) => getFolderPathNames(folderId, folders).join(' › ');
+        const getRelativeFolderPath = (folderId, currentFolderId, folders = []) => {
+            const fullPath = getFolderPathNames(folderId, folders);
+            if (!currentFolderId) return fullPath.join(' › ');
+            const currentPath = getFolderPathNames(currentFolderId, folders);
+            const isWithinCurrent = currentPath.every((name, index) => fullPath[index] === name);
+            if (!isWithinCurrent) return fullPath.join(' › ');
+            return fullPath.slice(currentPath.length).join(' › ');
+        };
         const makeFolderPathKey = (names = []) => names.map(normalizeCategoryKey).join('>');
 
         const buildLegacyFolders = (words = [], existingFolders = []) => {
@@ -2317,6 +2325,13 @@ const normalizeAnswer = (text) => String(text || '')
             const childFolderCount = (folderId) => folders.filter(folder => folder.parentId === folderId).length;
             const descendantFolderCount = (folderId) => Math.max(0, subtreeIds(folderId).length - 1);
             const folderPathLabel = currentFolderId ? currentFolder?.name || 'Folder' : 'All Folders';
+            const currentFolderTotalWords = currentFolderId ? subtreeWordCount(currentFolderId) : 0;
+            const currentFolderSubfolders = currentFolderId ? childFolderCount(currentFolderId) : 0;
+            const folderSummaryLabel = currentFolderId
+                ? currentFolderSubfolders === 0
+                    ? `${currentFolderTotalWords} words`
+                    : `${currentFolderTotalWords} words · ${currentFolderSubfolders} subfolders`
+                : `${folders.filter(folder => !folder.parentId).length} major folders · ${words.length} total words`;
             const folderMoveOptions = useMemo(() => folders.map(folder => ({
                 id: folder.id,
                 name: folder.name,
@@ -2531,6 +2546,13 @@ const normalizeAnswer = (text) => String(text || '')
             movingFolderIds.forEach(folderId => getFolderAndDescendantIds(folderId, folders).forEach(id => movingSubtreeIds.add(id)));
             const validMoveOptions = folderMoveOptions.filter(option => !movingSubtreeIds.has(option.id));
             const moveTargetInvalid = folderDialog?.type === 'move' && folderDraft.parentId && movingSubtreeIds.has(folderDraft.parentId);
+            const getWordLocationLabel = (word) => {
+                if (!word.folderId) return !currentFolderId && search ? word.category || 'General' : '';
+                if (!currentFolderId) return getFolderPath(word.folderId, folders) || word.category || 'General';
+                const relativePath = getRelativeFolderPath(word.folderId, currentFolderId, folders);
+                if (!relativePath) return '';
+                return relativePath || word.category || '';
+            };
 
             return (
                 <div className="h-full flex flex-col p-6 max-w-4xl mx-auto w-full overflow-hidden relative">
@@ -2674,12 +2696,12 @@ const normalizeAnswer = (text) => String(text || '')
                         </div>
                         <div className="flex flex-wrap items-center justify-between gap-3">
                             <div>
-                                <p className="text-sm font-black text-gray-700">{folderPathLabel}</p>
-                                <p className="text-xs text-gray-400 font-bold">
-                                    {currentFolderId ? `${directWordCount(currentFolderId)} direct words · ${subtreeWordCount(currentFolderId)} total words · ${childFolders.length} subfolders` : `${folders.filter(folder => !folder.parentId).length} major folders · ${words.length} total words`}
-                                </p>
-                            </div>
-                            <div className="flex flex-wrap gap-2">
+                                 <p className="text-sm font-black text-gray-700">{folderPathLabel}</p>
+                                 <p className="text-xs text-gray-400 font-bold">
+                                     {folderSummaryLabel}
+                                 </p>
+                             </div>
+                             <div className="flex flex-wrap gap-2">
                                 {currentFolderId && (
                                     <button onClick={() => goToFolder(currentFolder?.parentId || null)} className="px-3 py-2 rounded-xl bg-white border border-gray-100 text-gray-600 font-bold hover:bg-indigo-50 hover:text-indigo-600 flex items-center gap-2">
                                         <ChevronLeft size={18} /> Back
@@ -2690,9 +2712,9 @@ const normalizeAnswer = (text) => String(text || '')
                                          {viewAllDescendants ? 'Show Direct Words' : `View All ${subtreeWordCount(currentFolderId)} Words`}
                                      </button>
                                  )}
-                                 <button onClick={openCleanEmptyFolders} disabled={emptyLeafFolders.length === 0} className="px-3 py-2 rounded-xl bg-white border border-gray-100 text-gray-600 font-bold hover:bg-red-50 hover:text-red-600 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2">
+                                  {manageFoldersMode && <button onClick={openCleanEmptyFolders} disabled={emptyLeafFolders.length === 0} className="px-3 py-2 rounded-xl bg-white border border-gray-100 text-gray-600 font-bold hover:bg-red-50 hover:text-red-600 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2">
                                      <Trash2 size={16} /> Clean Up Empty Folders
-                                 </button>
+                                  </button>}
                              </div>
                          </div>
                      </div>
@@ -2773,7 +2795,9 @@ const normalizeAnswer = (text) => String(text || '')
                         {filtered.length === 0 ? (
                             <div className="text-center text-gray-400 py-10 font-bold">No words found.</div>
                         ) : (
-                            filtered.map(w => (
+                            filtered.map(w => {
+                                const locationLabel = getWordLocationLabel(w);
+                                return (
                                 <div key={w.id} onClick={() => toggleSelection(w.id)} className={`p-4 bg-white rounded-2xl border group transition-colors ${editingId === w.id ? 'border-indigo-300 ring-1 ring-indigo-300' : `cursor-pointer ${selectedIds.has(w.id) ? 'border-indigo-300 ring-1 ring-indigo-300 bg-indigo-50/50' : 'hover:border-indigo-200'}`}`}>
                                     {editingId === w.id ? (
                                         <div className="space-y-3" onClick={(e) => e.stopPropagation()}>
@@ -2840,17 +2864,16 @@ const normalizeAnswer = (text) => String(text || '')
                                             </div>
                                         </div>
                                     ) : (
-                                        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-                                            <div className="flex items-center gap-4 min-w-0">
+                                        <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
+                                            <div className="flex items-start gap-4 min-w-0 flex-1">
                                                 {selectedIds.has(w.id) ? <CheckSquare className="text-indigo-600 shrink-0" size={24} /> : <Square className="text-gray-300 shrink-0" size={24} />}
                                                 <div className="w-10 h-10 bg-indigo-50 text-indigo-500 rounded-full flex items-center justify-center font-bold shrink-0">{(w.word || '?')[0].toUpperCase()}</div>
-                                                <div className="min-w-0">
-                                                    <div className="flex items-center gap-2">
-                                                        <span className="font-bold text-lg truncate">{w.word}</span>
-                                                        <span className="text-xs px-2 py-0.5 bg-gray-100 text-gray-500 rounded-full shrink-0">{w.category || 'General'}</span>
-                                                    </div>
-                                                    <p className="text-sm text-gray-400 truncate">{w.mandarin} • {w.meaning || 'No description'}</p>
-                                                    {w.pronunciation && <p className="text-xs text-gray-300 truncate">/{w.pronunciation}/</p>}
+                                                <div className="min-w-0 flex-1">
+                                                    <h3 className="font-black text-xl text-gray-900 leading-snug break-words">{w.word}</h3>
+                                                    {w.meaning && <p className="text-sm text-gray-600 mt-1 leading-relaxed break-words">{w.meaning}</p>}
+                                                    <p className="text-sm text-gray-500 mt-1 leading-relaxed break-words">{w.mandarin || 'No Mandarin meaning'}</p>
+                                                    {w.pronunciation && <p className="text-xs text-gray-300 mt-1 break-words">/{w.pronunciation}/</p>}
+                                                    {locationLabel && <p className="inline-flex max-w-full mt-3 px-2 py-1 bg-gray-50 text-gray-400 rounded-lg text-xs font-bold leading-snug break-words">{locationLabel}</p>}
                                                 </div>
                                             </div>
                                             <div className="flex items-center justify-end gap-2 shrink-0 border-t border-gray-100 pt-3 sm:border-t-0 sm:pt-0">
@@ -2864,7 +2887,8 @@ const normalizeAnswer = (text) => String(text || '')
                                         </div>
                                     )}
                                 </div>
-                            ))
+                                );
+                            })
                         )}
                     </div>
                     <datalist id="vocab-categories">
