@@ -641,6 +641,16 @@ const normalizeAnswer = (text) => String(text || '')
             return 'LEARNING';
         };
 
+        const getBilingualMeaningParts = (word) => ({
+            mandarin: cleanCellText(word?.mandarin),
+            meaning: cleanCellText(word?.meaning)
+        });
+
+        const getBilingualMeaningLabel = (word) => {
+            const parts = getBilingualMeaningParts(word);
+            return [parts.mandarin, parts.meaning].filter(Boolean).join('\n');
+        };
+
         const chooseUniqueDistractors = (target, words = [], field = 'mandarin', count = 3) => {
             const targetLabel = cleanCellText(target?.[field]);
             const nearby = words.filter(word => word.id !== target?.id && word.folderId === target?.folderId);
@@ -656,15 +666,39 @@ const normalizeAnswer = (text) => String(text || '')
             return options;
         };
 
+        const chooseBilingualMeaningDistractors = (target, words = [], count = 3) => {
+            const targetLabel = getBilingualMeaningLabel(target);
+            const hasEnglishMeaning = (word) => Boolean(cleanCellText(word?.meaning));
+            const hasAnyMeaning = (word) => Boolean(getBilingualMeaningLabel(word));
+            const nearby = words.filter(word => word.id !== target?.id && word.folderId === target?.folderId);
+            const broader = words.filter(word => word.id !== target?.id && word.folderId !== target?.folderId);
+            const preferred = [...shuffleArray(nearby), ...shuffleArray(broader)].filter(word => hasEnglishMeaning(word) && hasAnyMeaning(word));
+            const fallback = [...shuffleArray(nearby), ...shuffleArray(broader)].filter(word => !hasEnglishMeaning(word) && hasAnyMeaning(word));
+            const seen = new Set([targetLabel]);
+            const options = [];
+            [...preferred, ...fallback].forEach(word => {
+                const label = getBilingualMeaningLabel(word);
+                if (!label || seen.has(label) || options.length >= count) return;
+                seen.add(label);
+                options.push(word);
+            });
+            return options;
+        };
+
         const makeChoiceQuestion = ({ target, words, type = 'recognition', title = 'Vocabulary Challenge' }) => {
             const answerField = type === 'recognition' ? 'mandarin' : 'word';
-            const distractors = chooseUniqueDistractors(target, words, answerField, 3);
+            const distractors = type === 'recognition'
+                ? chooseBilingualMeaningDistractors(target, words, 3)
+                : chooseUniqueDistractors(target, words, answerField, 3);
             if (distractors.length < 3 && type !== 'recognition') {
                 return makeChoiceQuestion({ target, words, type: 'recognition', title });
             }
             const options = shuffleArray([...distractors, target]).map(word => ({
                 id: word.id,
-                label: cleanCellText(word?.[answerField]),
+                label: type === 'recognition' ? getBilingualMeaningLabel(word) : cleanCellText(word?.[answerField]),
+                mandarin: type === 'recognition' ? cleanCellText(word?.mandarin) : '',
+                meaning: type === 'recognition' ? cleanCellText(word?.meaning) : '',
+                displayKind: type === 'recognition' ? 'bilingualMeaning' : 'plain',
                 correct: word.id === target.id
             }));
             return {
@@ -1783,8 +1817,8 @@ const normalizeAnswer = (text) => String(text || '')
             if (type === 'treasure') return makeSpellingQuestion({ target, title: 'Knowledge Chest' });
             if (type === 'npc') return makeContextQuestion({ target, words: currentRun.words, title: 'Guide Encounter' });
             if (type === 'mystery') return makeChoiceQuestion({ target, words: currentRun.words, type: 'recognition', title: 'Vocab Crystal' });
-            if (type === 'door') return makeChoiceQuestion({ target, words: currentRun.words, type: 'reverse', title: 'Word Gate' });
-            if (type === 'checkpoint') return makeChoiceQuestion({ target, words: currentRun.words, type: 'meaning', title: 'Review Beacon' });
+            if (type === 'door') return makeChoiceQuestion({ target, words: currentRun.words, type: 'recognition', title: 'Word Gate' });
+            if (type === 'checkpoint') return makeChoiceQuestion({ target, words: currentRun.words, type: 'recognition', title: 'Review Beacon' });
             if (type === 'boss') {
               const mastery = wordProgress[target.id]?.masteryLevel || 'NEW';
               const qType = mastery === 'NEAR_MASTERY' ? 'meaning' : mastery === 'FAMILIAR' ? 'reverse' : 'recognition';
@@ -1912,7 +1946,7 @@ const normalizeAnswer = (text) => String(text || '')
               ...current,
               feedback: {
                 correct,
-                chosen: option?.label,
+                chosenId: option?.id,
                 title: correct ? (isRecovered ? 'Recovered!' : 'Nice!') : 'Not quite.',
                 message: correct ? '+10 XP' : `${current.question.target.word} - ${current.question.target.meaning || 'Meaning not provided'} - ${current.question.target.mandarin}`
               }
@@ -2191,11 +2225,21 @@ const normalizeAnswer = (text) => String(text || '')
                           {challenge.question.options.map((option, index) => {
                             let style = 'bg-white border-gray-100 text-gray-700 hover:border-indigo-300 hover:bg-indigo-50';
                             if (challenge.feedback) {
-                              style = option.correct ? 'bg-emerald-500 border-emerald-500 text-white' : option.label === challenge.feedback.chosen ? 'bg-red-500 border-red-500 text-white' : 'bg-gray-50 border-transparent text-gray-400';
+                              style = option.correct ? 'bg-emerald-500 border-emerald-500 text-white' : option.id === challenge.feedback.chosenId ? 'bg-red-500 border-red-500 text-white' : 'bg-gray-50 border-transparent text-gray-400';
                             }
                             return (
-                              <button key={`${option.id}-${option.label}`} disabled={Boolean(challenge.feedback)} onClick={() => handleAdventureChoice(option)} className={`p-4 rounded-2xl border-2 text-left font-black transition-colors ${style}`}>
-                                <span className="text-indigo-300 mr-2">{index + 1}.</span>{option.label}
+                              <button key={`${option.id}-${option.label}`} disabled={Boolean(challenge.feedback)} onClick={() => handleAdventureChoice(option)} className={`p-4 min-h-[96px] rounded-2xl border-2 text-left font-black transition-colors ${style}`}>
+                                <div className="flex items-start gap-3">
+                                  <span className="text-indigo-300 shrink-0">{index + 1}.</span>
+                                  {option.displayKind === 'bilingualMeaning' ? (
+                                    <span className="min-w-0">
+                                      {option.mandarin && <span className="block text-base leading-snug break-words">{option.mandarin}</span>}
+                                      {option.meaning && <span className={`block text-sm leading-relaxed break-words ${challenge.feedback && (option.correct || option.id === challenge.feedback.chosenId) ? 'text-white/90' : challenge.feedback ? 'text-gray-400' : 'text-gray-500'}`}>{option.meaning}</span>}
+                                    </span>
+                                  ) : (
+                                    <span className="break-words">{option.label}</span>
+                                  )}
+                                </div>
                               </button>
                             );
                           })}
