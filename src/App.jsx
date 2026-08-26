@@ -591,6 +591,147 @@ const normalizeAnswer = (text) => String(text || '')
             return words.filter(word => word.folderId ? allowedFolderIds.has(word.folderId) : selectedFolderIds.has(word.category || 'General'));
         };
 
+        const ADVENTURE_CHUNK_SIZE = 18;
+        const ADVENTURE_MIN_RETRY_SPACING = 3;
+
+        const stableTextHash = (text = '') => {
+            let hash = 0;
+            String(text).split('').forEach(char => {
+                hash = ((hash << 5) - hash) + char.charCodeAt(0);
+                hash |= 0;
+            });
+            return Math.abs(hash);
+        };
+
+        const getAdventureWordsForFolder = (folderId, words = [], folders = []) => {
+            const ids = new Set(getFolderAndDescendantIds(folderId, folders));
+            return words
+                .filter(word => word.folderId && ids.has(word.folderId) && word.word && word.mandarin)
+                .sort((a, b) => {
+                    const aKey = `${a.folderId || ''}|${a.word || ''}|${a.id || ''}`;
+                    const bKey = `${b.folderId || ''}|${b.word || ''}|${b.id || ''}`;
+                    return aKey.localeCompare(bKey);
+                });
+        };
+
+        const buildAdventureSessions = (folderId, words = [], folders = []) => {
+            const pool = getAdventureWordsForFolder(folderId, words, folders);
+            if (!pool.length) return [];
+            const chunks = [];
+            for (let start = 0; start < pool.length; start += ADVENTURE_CHUNK_SIZE) {
+                chunks.push(pool.slice(start, start + ADVENTURE_CHUNK_SIZE));
+            }
+            return chunks.map((chunk, index) => ({
+                id: `${folderId}-adv-${index + 1}`,
+                folderId,
+                chunkIndex: index,
+                title: chunks.length === 1 ? (chunk.length <= 5 ? 'Bonus Area' : 'Adventure 1') : `Adventure ${index + 1}`,
+                words: chunk
+            }));
+        };
+
+        const getAdventureStageKey = (folderId, chunkIndex = 0) => `adv:${folderId}:${chunkIndex}`;
+
+        const getMasteryLevel = (progress) => {
+            if (!progress || !progress.seenCount) return 'NEW';
+            const accuracy = progress.correctCount / Math.max(1, progress.seenCount);
+            if (progress.wrongCount >= 3 && accuracy < 0.65) return 'LEARNING';
+            if (progress.correctCount >= 5 && accuracy >= 0.9) return 'NEAR_MASTERY';
+            if (progress.correctCount >= 2 && accuracy >= 0.7) return 'FAMILIAR';
+            return 'LEARNING';
+        };
+
+        const chooseUniqueDistractors = (target, words = [], field = 'mandarin', count = 3) => {
+            const targetLabel = cleanCellText(target?.[field]);
+            const nearby = words.filter(word => word.id !== target?.id && word.folderId === target?.folderId);
+            const broader = words.filter(word => word.id !== target?.id && word.folderId !== target?.folderId);
+            const seen = new Set([targetLabel]);
+            const options = [];
+            [...shuffleArray(nearby), ...shuffleArray(broader)].forEach(word => {
+                const label = cleanCellText(word?.[field]);
+                if (!label || seen.has(label) || options.length >= count) return;
+                seen.add(label);
+                options.push(word);
+            });
+            return options;
+        };
+
+        const makeChoiceQuestion = ({ target, words, type = 'recognition', title = 'Vocabulary Challenge' }) => {
+            const answerField = type === 'recognition' ? 'mandarin' : 'word';
+            const distractors = chooseUniqueDistractors(target, words, answerField, 3);
+            if (distractors.length < 3 && type !== 'recognition') {
+                return makeChoiceQuestion({ target, words, type: 'recognition', title });
+            }
+            const options = shuffleArray([...distractors, target]).map(word => ({
+                id: word.id,
+                label: cleanCellText(word?.[answerField]),
+                correct: word.id === target.id
+            }));
+            return {
+                kind: 'choice',
+                type,
+                title,
+                target,
+                prompt:
+                    type === 'reverse' ? target.mandarin :
+                    type === 'meaning' ? target.meaning || target.mandarin :
+                    target.word,
+                instruction:
+                    type === 'reverse' ? 'Which English word is correct?' :
+                    type === 'meaning' ? 'Which word matches this meaning?' :
+                    'Which meaning is correct?',
+                options
+            };
+        };
+
+        const makeSpellingQuestion = ({ target, title = 'Knowledge Chest' }) => ({
+            kind: 'spelling',
+            type: 'spelling',
+            title,
+            target,
+            prompt: target.mandarin || target.meaning || target.word,
+            instruction: 'Type the English word'
+        });
+
+        const makeContextQuestion = ({ target, words, title = 'Guide Encounter' }) => {
+            if (target.meaning) {
+                return makeChoiceQuestion({ target, words, type: 'meaning', title });
+            }
+            return makeChoiceQuestion({ target, words, type: 'reverse', title });
+        };
+
+        const updateVocabularyProgress = (progressMap = {}, word, correct, mode = 'recognition') => {
+            if (!word?.id) return progressMap;
+            const previous = progressMap[word.id] || {
+                wordId: word.id,
+                seenCount: 0,
+                correctCount: 0,
+                wrongCount: 0,
+                lastSeen: null,
+                masteryLevel: 'NEW',
+                modeStats: {}
+            };
+            const modeStats = previous.modeStats || {};
+            const modePrevious = modeStats[mode] || { seenCount: 0, correctCount: 0, wrongCount: 0 };
+            const next = {
+                ...previous,
+                seenCount: previous.seenCount + 1,
+                correctCount: previous.correctCount + (correct ? 1 : 0),
+                wrongCount: previous.wrongCount + (correct ? 0 : 1),
+                lastSeen: new Date().toISOString(),
+                modeStats: {
+                    ...modeStats,
+                    [mode]: {
+                        seenCount: modePrevious.seenCount + 1,
+                        correctCount: modePrevious.correctCount + (correct ? 1 : 0),
+                        wrongCount: modePrevious.wrongCount + (correct ? 0 : 1)
+                    }
+                }
+            };
+            next.masteryLevel = getMasteryLevel(next);
+            return { ...progressMap, [word.id]: next };
+        };
+
         function CategorySelectionScreen({ words, folders = [], onSelect, title }) {
             const [selectedFolderIds, setSelectedFolderIds] = useState(new Set());
             const [currentFolderId, setCurrentFolderId] = useState(null);
@@ -1482,6 +1623,693 @@ const normalizeAnswer = (text) => String(text || '')
                       spellCheck="false"
                   />
               </div>
+          );
+        }
+
+        function AdventureMode({ words, folders, setIsDirty, username }) {
+          const [phase, setPhase] = useState('map');
+          const [currentFolderId, setCurrentFolderId] = useState(null);
+          const [selectedSession, setSelectedSession] = useState(null);
+          const [run, setRun] = useState(null);
+          const [challenge, setChallenge] = useState(null);
+          const [pauseMenu, setPauseMenu] = useState(false);
+          const [spellingInput, setSpellingInput] = useState('');
+          const [adventureProgress, setAdventureProgress] = useState(() => {
+            try {
+              const saved = localStorage.getItem('en_vocab_adventure_progress');
+              const parsed = saved ? JSON.parse(saved) : {};
+              return parsed && typeof parsed === 'object' ? parsed : {};
+            } catch (error) {
+              console.warn('Unable to read adventure progress.', error);
+              return {};
+            }
+          });
+          const [wordProgress, setWordProgress] = useState(() => {
+            try {
+              const saved = localStorage.getItem('en_vocab_word_progress');
+              const parsed = saved ? JSON.parse(saved) : {};
+              return parsed && typeof parsed === 'object' ? parsed : {};
+            } catch (error) {
+              console.warn('Unable to read vocabulary progress.', error);
+              return {};
+            }
+          });
+          const keysRef = useRef({});
+          const spellingInputRef = useRef(null);
+
+          useEffect(() => {
+            if (setIsDirty) setIsDirty(phase === 'playing');
+          }, [phase, setIsDirty]);
+
+          useEffect(() => {
+            try { localStorage.setItem('en_vocab_adventure_progress', JSON.stringify(adventureProgress)); } catch (error) { console.warn('Unable to save adventure progress.', error); }
+          }, [adventureProgress]);
+
+          useEffect(() => {
+            try { localStorage.setItem('en_vocab_word_progress', JSON.stringify(wordProgress)); } catch (error) { console.warn('Unable to save vocabulary progress.', error); }
+          }, [wordProgress]);
+
+          const folderById = useMemo(() => new Map(folders.map(folder => [folder.id, folder])), [folders]);
+          const currentFolder = currentFolderId ? folderById.get(currentFolderId) : null;
+          const rootFolders = useMemo(() => folders.filter(folder => !folder.parentId), [folders]);
+          const childFolders = useMemo(() => folders.filter(folder => (folder.parentId || null) === (currentFolderId || null)), [folders, currentFolderId]);
+          const breadcrumb = useMemo(() => {
+            const path = [];
+            let cursor = currentFolder;
+            const seen = new Set();
+            while (cursor && !seen.has(cursor.id)) {
+              seen.add(cursor.id);
+              path.unshift(cursor);
+              cursor = cursor.parentId ? folderById.get(cursor.parentId) : null;
+            }
+            return path;
+          }, [currentFolder, folderById]);
+
+          const sessionsForCurrentFolder = useMemo(() => currentFolderId ? buildAdventureSessions(currentFolderId, words, folders) : [], [currentFolderId, words, folders]);
+
+          const getSubtreeWordCount = (folderId) => getAdventureWordsForFolder(folderId, words, folders).length;
+          const getStageProgress = (folderId, chunkIndex = 0) => adventureProgress[getAdventureStageKey(folderId, chunkIndex)] || null;
+
+          const buildEncounterPlan = (sessionWords) => {
+            const usable = sessionWords.filter(word => word.word && word.mandarin);
+            const normal = usable.length >= 12
+              ? ['enemy', 'mystery', 'enemy', 'treasure', 'enemy', 'npc', 'enemy', 'mystery', 'treasure', 'door', 'enemy', 'checkpoint', 'enemy', 'mystery', 'treasure']
+              : usable.length >= 6
+                ? ['enemy', 'mystery', 'treasure', 'enemy', 'npc', 'door', 'checkpoint']
+                : ['enemy', 'mystery', 'treasure', 'checkpoint'];
+            const encounters = normal.map((type, index) => ({
+              id: `enc-${index}`,
+              type,
+              x: 180 + index * 170,
+              wordIndex: index % Math.max(1, usable.length),
+              cleared: false
+            }));
+            encounters.push({
+              id: 'boss',
+              type: 'boss',
+              x: 220 + encounters.length * 170,
+              wordIndex: 0,
+              cleared: false
+            });
+            return encounters;
+          };
+
+          const startSession = (session) => {
+            const stageWords = session.words.filter(word => word.word && word.mandarin);
+            if (!stageWords.length) return;
+            const plan = buildEncounterPlan(stageWords);
+            const stageKey = getAdventureStageKey(session.folderId, session.chunkIndex);
+            const saved = adventureProgress[stageKey];
+            setSelectedSession(session);
+            setRun({
+              stageKey,
+              folderId: session.folderId,
+              chunkIndex: session.chunkIndex,
+              title: `${folderById.get(session.folderId)?.name || 'Adventure'} - ${session.title}`,
+              words: stageWords,
+              plan,
+              playerX: saved?.checkpointX || 20,
+              currentEncounterIndex: Math.max(0, saved?.checkpointEncounterIndex || 0),
+              answeredCount: 0,
+              correctCount: 0,
+              wrongCount: 0,
+              xp: 0,
+              combo: 0,
+              bestCombo: 0,
+              defeatedEnemies: 0,
+              openedChests: 0,
+              mistakes: [],
+              needsReview: [],
+              answeredWordIds: [],
+              bossHp: Math.min(10, Math.max(8, stageWords.length)),
+              bossAttempts: 0,
+              doorProgress: 0,
+              checkpointIndex: saved?.checkpointEncounterIndex || 0
+            });
+            setChallenge(null);
+            setPauseMenu(false);
+            setPhase('playing');
+          };
+
+          const getRetryCandidate = (currentRun, encounterIndex) => {
+            return currentRun.mistakes.find(item =>
+              !item.recovered &&
+              item.retryCount < 2 &&
+              encounterIndex - item.wrongAtEncounter >= ADVENTURE_MIN_RETRY_SPACING
+            );
+          };
+
+          const chooseAdventureWord = (currentRun, encounter, mode = 'normal') => {
+            if (!currentRun?.words?.length) return null;
+            const retry = mode !== 'boss' ? getRetryCandidate(currentRun, currentRun.currentEncounterIndex) : null;
+            if (retry) return currentRun.words.find(word => word.id === retry.wordId) || currentRun.words[0];
+            if (mode === 'boss') {
+              const wrongIds = currentRun.mistakes.filter(item => !item.recovered).map(item => item.wordId);
+              const weakIds = currentRun.words
+                .filter(word => ['LEARNING', 'NEW'].includes(wordProgress[word.id]?.masteryLevel || 'NEW'))
+                .map(word => word.id);
+              const priorityIds = [...wrongIds, ...weakIds, ...currentRun.words.map(word => word.id)];
+              const chosenId = priorityIds[(currentRun.bossAttempts || 0) % priorityIds.length];
+              return currentRun.words.find(word => word.id === chosenId) || currentRun.words[0];
+            }
+            const index = (encounter?.wordIndex || 0) % currentRun.words.length;
+            return currentRun.words[index];
+          };
+
+          const makeQuestionForEncounter = (currentRun, encounter, modeOverride = null) => {
+            const type = modeOverride || encounter.type;
+            const target = chooseAdventureWord(currentRun, encounter, type === 'boss' ? 'boss' : 'normal');
+            if (!target) return null;
+            if (type === 'treasure') return makeSpellingQuestion({ target, title: 'Knowledge Chest' });
+            if (type === 'npc') return makeContextQuestion({ target, words: currentRun.words, title: 'Guide Encounter' });
+            if (type === 'mystery') return makeChoiceQuestion({ target, words: currentRun.words, type: 'recognition', title: 'Vocab Crystal' });
+            if (type === 'door') return makeChoiceQuestion({ target, words: currentRun.words, type: 'reverse', title: 'Word Gate' });
+            if (type === 'checkpoint') return makeChoiceQuestion({ target, words: currentRun.words, type: 'meaning', title: 'Review Beacon' });
+            if (type === 'boss') {
+              const mastery = wordProgress[target.id]?.masteryLevel || 'NEW';
+              const qType = mastery === 'NEAR_MASTERY' ? 'meaning' : mastery === 'FAMILIAR' ? 'reverse' : 'recognition';
+              return makeChoiceQuestion({ target, words: currentRun.words, type: qType, title: 'Word Guardian' });
+            }
+            return makeChoiceQuestion({ target, words: currentRun.words, type: 'recognition', title: 'Enemy Encounter' });
+          };
+
+          const openEncounter = (encounter) => {
+            if (!run || challenge || encounter?.cleared) return;
+            const question = makeQuestionForEncounter(run, encounter);
+            if (!question) return;
+            setSpellingInput('');
+            setChallenge({
+              encounterId: encounter.id,
+              encounterType: encounter.type,
+              question,
+              feedback: null,
+              sequenceCorrect: 0,
+              sequenceTarget: encounter.type === 'door' ? 3 : encounter.type === 'checkpoint' ? Math.min(5, Math.max(3, run.words.length)) : 1
+            });
+          };
+
+          useEffect(() => {
+            const down = (event) => {
+              if (phase !== 'playing') return;
+              const key = event.key.toLowerCase();
+              if (['arrowleft', 'arrowright', ' ', 'arrowup'].includes(event.key) || ['a', 'd', 'w'].includes(key)) event.preventDefault();
+              keysRef.current[key] = true;
+              if (event.key === 'Escape') setPauseMenu(value => !value);
+              if (challenge?.question?.kind === 'choice' && !challenge.feedback) {
+                const labels = ['1', '2', '3', '4', 'a', 'b', 'c', 'd'];
+                const index = labels.indexOf(key);
+                if (index >= 0 && index < challenge.question.options.length) handleAdventureChoice(challenge.question.options[index]);
+              }
+            };
+            const up = (event) => { keysRef.current[event.key.toLowerCase()] = false; };
+            window.addEventListener('keydown', down);
+            window.addEventListener('keyup', up);
+            return () => {
+              window.removeEventListener('keydown', down);
+              window.removeEventListener('keyup', up);
+            };
+          }, [phase, challenge, run]);
+
+          useEffect(() => {
+            if (challenge?.question?.kind === 'spelling' && spellingInputRef.current) {
+              setTimeout(() => spellingInputRef.current?.focus(), 50);
+            }
+          }, [challenge?.question?.kind, challenge?.question?.target?.id]);
+
+          useEffect(() => {
+            if (phase !== 'playing' || !run || challenge || pauseMenu) return;
+            const timer = setInterval(() => {
+              setRun(current => {
+                if (!current || challenge || pauseMenu) return current;
+                const movingLeft = keysRef.current.arrowleft || keysRef.current.a;
+                const movingRight = keysRef.current.arrowright || keysRef.current.d;
+                const jump = keysRef.current[' '] || keysRef.current.arrowup || keysRef.current.w;
+                const speed = movingRight ? 18 : movingLeft ? -13 : 4;
+                const maxX = current.plan[current.plan.length - 1]?.x || 1400;
+                const nextX = Math.max(0, Math.min(maxX + 80, current.playerX + speed));
+                const next = { ...current, playerX: nextX, jumping: Boolean(jump) };
+                const encounter = next.plan[next.currentEncounterIndex];
+                if (encounter && !encounter.cleared && nextX >= encounter.x - 42) {
+                  setTimeout(() => openEncounter(encounter), 0);
+                }
+                return next;
+              });
+            }, 70);
+            return () => clearInterval(timer);
+          }, [phase, run, challenge, pauseMenu]);
+
+          const recordAdventureAnswer = (correct, question) => {
+            setWordProgress(current => updateVocabularyProgress(current, question.target, correct, question.type || question.kind));
+            setRun(current => {
+              if (!current) return current;
+              const nextMistakes = [...current.mistakes];
+              let recovered = false;
+              if (correct) {
+                const retryIndex = nextMistakes.findIndex(item => item.wordId === question.target.id && !item.recovered && current.currentEncounterIndex - item.wrongAtEncounter >= ADVENTURE_MIN_RETRY_SPACING);
+                if (retryIndex >= 0) {
+                  nextMistakes[retryIndex] = { ...nextMistakes[retryIndex], recovered: true };
+                  recovered = true;
+                }
+              } else {
+                nextMistakes.push({
+                  wordId: question.target.id,
+                  wrongAtEncounter: current.currentEncounterIndex,
+                  retryEligibleAfter: current.currentEncounterIndex + ADVENTURE_MIN_RETRY_SPACING,
+                  retryCount: nextMistakes.filter(item => item.wordId === question.target.id).length,
+                  recovered: false
+                });
+              }
+              const combo = correct ? current.combo + 1 : 0;
+              const xpGain = correct ? 10 + Math.floor(combo / 3) * 3 : 0;
+              return {
+                ...current,
+                answeredCount: current.answeredCount + 1,
+                correctCount: current.correctCount + (correct ? 1 : 0),
+                wrongCount: current.wrongCount + (correct ? 0 : 1),
+                combo,
+                bestCombo: Math.max(current.bestCombo, combo),
+                xp: current.xp + xpGain,
+                mistakes: nextMistakes,
+                needsReview: correct && recovered ? current.needsReview.filter(id => id !== question.target.id) : [...new Set([...current.needsReview, ...(correct ? [] : [question.target.id])])],
+                answeredWordIds: [...current.answeredWordIds, question.target.id],
+                lastRecovered: recovered
+              };
+            });
+            return correct;
+          };
+
+          const handleAdventureChoice = (option) => {
+            if (!challenge || challenge.feedback) return;
+            const correct = Boolean(option?.correct);
+            const isRecovered = correct && run?.mistakes?.some(item =>
+              item.wordId === challenge.question.target.id &&
+              !item.recovered &&
+              run.currentEncounterIndex - item.wrongAtEncounter >= ADVENTURE_MIN_RETRY_SPACING
+            );
+            recordAdventureAnswer(correct, challenge.question);
+            playSoundEffect(correct ? 'correct' : 'wrong');
+            setChallenge(current => ({
+              ...current,
+              feedback: {
+                correct,
+                chosen: option?.label,
+                title: correct ? (isRecovered ? 'Recovered!' : 'Nice!') : 'Not quite.',
+                message: correct ? '+10 XP' : `${current.question.target.word} - ${current.question.target.meaning || 'Meaning not provided'} - ${current.question.target.mandarin}`
+              }
+            }));
+          };
+
+          const handleSpellingSubmit = () => {
+            if (!challenge || challenge.feedback) return;
+            const correct = normalizeAnswer(spellingInput) === normalizeAnswer(challenge.question.target.word);
+            const isRecovered = correct && run?.mistakes?.some(item =>
+              item.wordId === challenge.question.target.id &&
+              !item.recovered &&
+              run.currentEncounterIndex - item.wrongAtEncounter >= ADVENTURE_MIN_RETRY_SPACING
+            );
+            recordAdventureAnswer(correct, challenge.question);
+            playSoundEffect(correct ? 'correct' : 'wrong');
+            setChallenge(current => ({
+              ...current,
+              feedback: {
+                correct,
+                chosen: spellingInput,
+                title: correct ? (isRecovered ? 'Recovered!' : 'Chest Opened!') : 'Not quite.',
+                message: correct ? '+10 XP' : `${current.question.target.word} - ${current.question.target.meaning || 'Meaning not provided'} - ${current.question.target.mandarin}`
+              }
+            }));
+          };
+
+          const finishEncounter = () => {
+            if (!run || !challenge) return;
+            const encounter = run.plan[run.currentEncounterIndex];
+            const correct = Boolean(challenge.feedback?.correct);
+            const nextSequenceCorrect = challenge.sequenceCorrect + (correct ? 1 : 0);
+            const needsAnotherDoorQuestion = challenge.encounterType === 'door' && nextSequenceCorrect < challenge.sequenceTarget;
+            const needsAnotherCheckpointQuestion = challenge.encounterType === 'checkpoint' && nextSequenceCorrect < challenge.sequenceTarget;
+            const bossHpAfter = challenge.encounterType === 'boss' && correct ? Math.max(0, run.bossHp - 1) : run.bossHp;
+            const bossContinues = challenge.encounterType === 'boss' && bossHpAfter > 0 && (run.bossAttempts < 18 || correct);
+
+            if (needsAnotherDoorQuestion || needsAnotherCheckpointQuestion || bossContinues) {
+              const nextRun = {
+                ...run,
+                doorProgress: challenge.encounterType === 'door' ? nextSequenceCorrect : run.doorProgress,
+                bossHp: bossHpAfter,
+                bossAttempts: challenge.encounterType === 'boss' ? run.bossAttempts + 1 : run.bossAttempts
+              };
+              const nextQuestion = makeQuestionForEncounter(nextRun, encounter, challenge.encounterType);
+              setRun(nextRun);
+              setSpellingInput('');
+              setChallenge({
+                ...challenge,
+                question: nextQuestion,
+                feedback: null,
+                sequenceCorrect: nextSequenceCorrect
+              });
+              return;
+            }
+
+            const nextPlan = run.plan.map(item => item.id === encounter.id ? { ...item, cleared: true } : item);
+            const nextIndex = Math.min(run.currentEncounterIndex + 1, nextPlan.length);
+            const isBoss = challenge.encounterType === 'boss';
+            const checkpointX = challenge.encounterType === 'checkpoint' ? encounter.x : run.checkpointX;
+            const nextRun = {
+              ...run,
+              plan: nextPlan,
+              currentEncounterIndex: nextIndex,
+              playerX: Math.min((encounter?.x || run.playerX) + 60, nextPlan[nextPlan.length - 1]?.x || run.playerX),
+              defeatedEnemies: run.defeatedEnemies + (challenge.encounterType === 'enemy' ? 1 : 0),
+              openedChests: run.openedChests + (challenge.encounterType === 'treasure' ? 1 : 0),
+              doorProgress: challenge.encounterType === 'door' ? 0 : run.doorProgress,
+              checkpointX: checkpointX || run.checkpointX,
+              checkpointIndex: challenge.encounterType === 'checkpoint' ? nextIndex : run.checkpointIndex,
+              bossHp: isBoss ? 0 : run.bossHp
+            };
+            setChallenge(null);
+            setRun(nextRun);
+
+            if (challenge.encounterType === 'checkpoint') {
+              setAdventureProgress(current => ({
+                ...current,
+                [run.stageKey]: {
+                  ...(current[run.stageKey] || {}),
+                  checkpointX: nextRun.playerX,
+                  checkpointEncounterIndex: nextIndex,
+                  updatedAt: new Date().toISOString()
+                }
+              }));
+            }
+
+            if (isBoss || nextIndex >= nextPlan.length) {
+              completeStage(nextRun);
+            }
+          };
+
+          const completeStage = (finishedRun) => {
+            const accuracy = finishedRun.answeredCount ? Math.round((finishedRun.correctCount / finishedRun.answeredCount) * 100) : 0;
+            const stars = 1 + (accuracy >= 80 ? 1 : 0) + (finishedRun.bossHp === 0 && finishedRun.correctCount >= Math.max(1, finishedRun.wrongCount) ? 1 : 0);
+            const previous = adventureProgress[finishedRun.stageKey] || {};
+            setAdventureProgress(current => ({
+              ...current,
+              [finishedRun.stageKey]: {
+                ...previous,
+                completed: true,
+                bestAccuracy: Math.max(previous.bestAccuracy || 0, accuracy),
+                bestCombo: Math.max(previous.bestCombo || 0, finishedRun.bestCombo),
+                bestXp: Math.max(previous.bestXp || 0, finishedRun.xp),
+                stars: Math.max(previous.stars || 0, stars),
+                lastCompletedAt: new Date().toISOString(),
+                checkpointX: 0,
+                checkpointEncounterIndex: 0
+              }
+            }));
+            setRun({ ...finishedRun, accuracy, stars });
+            setPhase('result');
+          };
+
+          const restartStage = () => {
+            if (selectedSession) startSession(selectedSession);
+          };
+
+          const exitAdventure = () => {
+            setPhase('map');
+            setRun(null);
+            setChallenge(null);
+            setPauseMenu(false);
+          };
+
+          const getEncounterVisual = (type) => ({
+            enemy: { label: 'Word Wisp', icon: '◆', color: 'bg-rose-500', border: 'border-rose-200' },
+            mystery: { label: 'Vocab Crystal', icon: '✦', color: 'bg-cyan-500', border: 'border-cyan-200' },
+            treasure: { label: 'Knowledge Chest', icon: '▣', color: 'bg-amber-500', border: 'border-amber-200' },
+            npc: { label: 'Guide', icon: '◇', color: 'bg-emerald-500', border: 'border-emerald-200' },
+            door: { label: 'Word Gate', icon: '▥', color: 'bg-slate-600', border: 'border-slate-200' },
+            checkpoint: { label: 'Review Beacon', icon: '⌁', color: 'bg-indigo-500', border: 'border-indigo-200' },
+            boss: { label: 'Word Guardian', icon: '✹', color: 'bg-purple-600', border: 'border-purple-200' }
+          }[type] || { label: 'Encounter', icon: '•', color: 'bg-indigo-500', border: 'border-indigo-200' });
+
+          if (!words.length) {
+            return (
+              <div className="h-full flex items-center justify-center p-8 text-center">
+                <div className="max-w-md bg-white rounded-3xl border border-gray-100 shadow-xl p-8">
+                  <Zap size={48} className="mx-auto text-indigo-500 mb-4" />
+                  <h2 className="text-3xl font-black text-gray-800 mb-2">Vocab Adventure</h2>
+                  <p className="text-gray-500 font-bold">Add vocabulary first, then return here to explore a stage.</p>
+                </div>
+              </div>
+            );
+          }
+
+          if (phase === 'result' && run) {
+            const reviewWords = run.needsReview.map(id => run.words.find(word => word.id === id)).filter(Boolean);
+            return (
+              <div className="h-full overflow-y-auto bg-gray-50 p-6">
+                <div className="max-w-4xl mx-auto bg-white rounded-3xl border border-gray-100 shadow-xl p-6 md:p-8">
+                  <div className="text-center mb-8">
+                    <Award size={64} className="mx-auto text-yellow-500 mb-4" />
+                    <h2 className="text-4xl font-black text-gray-800">Stage Cleared</h2>
+                    <p className="text-indigo-600 font-black mt-2">{run.title}</p>
+                    {run.accuracy >= 95 && <p className="mt-3 text-emerald-600 font-black">Perfect Adventure</p>}
+                  </div>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-8">
+                    <div className="bg-indigo-50 rounded-2xl p-4 text-center"><p className="text-2xl font-black text-indigo-700">{run.accuracy}%</p><p className="text-xs font-bold text-indigo-400">Accuracy</p></div>
+                    <div className="bg-emerald-50 rounded-2xl p-4 text-center"><p className="text-2xl font-black text-emerald-700">{run.bestCombo}</p><p className="text-xs font-bold text-emerald-400">Best Combo</p></div>
+                    <div className="bg-amber-50 rounded-2xl p-4 text-center"><p className="text-2xl font-black text-amber-700">{run.xp}</p><p className="text-xs font-bold text-amber-400">XP</p></div>
+                    <div className="bg-purple-50 rounded-2xl p-4 text-center"><p className="text-2xl font-black text-purple-700">{'★'.repeat(run.stars)}{'☆'.repeat(3 - run.stars)}</p><p className="text-xs font-bold text-purple-400">Stage Rating</p></div>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
+                    <div className="rounded-2xl border border-gray-100 p-4">
+                      <h3 className="font-black text-gray-800 mb-3">Adventure Stats</h3>
+                      <p className="text-sm text-gray-500 font-bold">Enemies defeated: {run.defeatedEnemies}</p>
+                      <p className="text-sm text-gray-500 font-bold">Treasure chests opened: {run.openedChests}</p>
+                      <p className="text-sm text-gray-500 font-bold">Questions answered: {run.answeredCount}</p>
+                    </div>
+                    <div className="rounded-2xl border border-gray-100 p-4">
+                      <h3 className="font-black text-gray-800 mb-3">Needs Review</h3>
+                      {reviewWords.length ? reviewWords.slice(0, 8).map(word => <p key={word.id} className="text-sm text-red-500 font-bold">{word.word} - {word.mandarin}</p>) : <p className="text-sm text-emerald-600 font-bold">No unresolved difficult words.</p>}
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-3 justify-center">
+                    {reviewWords.length > 0 && <button onClick={() => startSession({ ...selectedSession, words: reviewWords, title: 'Difficult Words Review', chunkIndex: selectedSession?.chunkIndex || 0 })} className="px-5 py-3 rounded-xl bg-red-50 text-red-600 font-black border border-red-100 hover:bg-red-100">Review Difficult Words</button>}
+                    <button onClick={restartStage} className="px-5 py-3 rounded-xl bg-indigo-50 text-indigo-600 font-black border border-indigo-100 hover:bg-indigo-100">Restart Stage</button>
+                    <button onClick={exitAdventure} className="px-5 py-3 rounded-xl bg-indigo-600 text-white font-black shadow-lg hover:bg-indigo-700">Back to Map</button>
+                  </div>
+                </div>
+              </div>
+            );
+          }
+
+          if (phase === 'playing' && run) {
+            const worldWidth = Math.max(1300, (run.plan.length + 2) * 180);
+            const cameraX = Math.max(0, Math.min(run.playerX - 180, worldWidth - 760));
+            const progress = Math.min(100, Math.round((run.currentEncounterIndex / Math.max(1, run.plan.length)) * 100));
+            return (
+              <div className="h-full bg-sky-50 overflow-hidden relative">
+                <div className="absolute top-0 left-0 right-0 z-20 p-3 md:p-4">
+                  <div className="bg-white/90 backdrop-blur border border-white rounded-2xl shadow-sm p-3 flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-black text-gray-800">{folderById.get(run.folderId)?.name || 'Adventure'}</p>
+                      <p className="text-xs text-gray-400 font-bold">{run.title}</p>
+                    </div>
+                    <div className="flex-1 min-w-[160px] max-w-xs">
+                      <div className="h-3 bg-gray-100 rounded-full overflow-hidden">
+                        <div className="h-full bg-indigo-500 rounded-full transition-all" style={{ width: `${progress}%` }} />
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-3 text-sm font-black">
+                      <span className="text-amber-600">XP {run.xp}</span>
+                      <span className="text-emerald-600">x{Math.max(1, run.combo)}</span>
+                      <button onClick={() => setPauseMenu(true)} className="px-3 py-2 bg-gray-100 text-gray-600 rounded-xl hover:bg-gray-200">Pause</button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="absolute inset-x-0 bottom-0 h-[360px] overflow-hidden">
+                  <div className="absolute bottom-0 h-full transition-transform duration-100" style={{ width: worldWidth, transform: `translateX(-${cameraX}px)` }}>
+                    <div className="absolute bottom-0 left-0 right-0 h-24 bg-emerald-200 border-t-4 border-emerald-300" />
+                    <div className="absolute bottom-24 left-0 right-0 h-2 bg-emerald-500/30" />
+                    {run.plan.map((encounter) => {
+                      const visual = getEncounterVisual(encounter.type);
+                      return (
+                        <div key={encounter.id} className="absolute bottom-28 flex flex-col items-center" style={{ left: encounter.x }}>
+                          <div className={`w-14 h-14 rounded-2xl ${encounter.cleared ? 'bg-gray-200 text-gray-400' : `${visual.color} text-white`} border-4 ${visual.border} shadow-lg flex items-center justify-center text-2xl font-black`}>
+                            {encounter.cleared ? '✓' : visual.icon}
+                          </div>
+                          <span className="mt-2 text-[11px] font-black text-gray-500 bg-white/80 rounded-full px-2 py-1 whitespace-nowrap">{visual.label}</span>
+                        </div>
+                      );
+                    })}
+                    <div className="absolute bottom-28 transition-all duration-100" style={{ left: run.playerX, transform: run.jumping ? 'translateY(-46px)' : 'translateY(0)' }}>
+                      <div className="w-12 h-14 rounded-t-3xl rounded-b-xl bg-indigo-600 border-4 border-indigo-200 shadow-xl relative">
+                        <div className="absolute top-3 left-2 w-2 h-2 bg-white rounded-full" />
+                        <div className="absolute top-3 right-2 w-2 h-2 bg-white rounded-full" />
+                        <div className="absolute -top-4 left-3 right-3 h-5 bg-amber-300 rounded-t-xl border-2 border-amber-100" />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-20 flex gap-2 md:hidden">
+                  <button onTouchStart={() => { keysRef.current.a = true; }} onTouchEnd={() => { keysRef.current.a = false; }} className="w-14 h-12 rounded-2xl bg-white/90 shadow font-black text-indigo-600">◀</button>
+                  <button onTouchStart={() => { keysRef.current.d = true; }} onTouchEnd={() => { keysRef.current.d = false; }} className="w-14 h-12 rounded-2xl bg-white/90 shadow font-black text-indigo-600">▶</button>
+                  <button onTouchStart={() => { keysRef.current.w = true; }} onTouchEnd={() => { keysRef.current.w = false; }} className="w-20 h-12 rounded-2xl bg-white/90 shadow font-black text-indigo-600">JUMP</button>
+                </div>
+
+                <div className="absolute bottom-4 left-4 z-20 hidden md:block text-xs text-gray-500 font-bold bg-white/80 rounded-xl px-3 py-2">← / A move · → / D move · Space / W jump · 1-4 answer · Esc pause</div>
+
+                {(pauseMenu || challenge) && <div className="absolute inset-0 z-40 bg-slate-900/35 backdrop-blur-sm" />}
+                {pauseMenu && (
+                  <div className="absolute inset-0 z-50 flex items-center justify-center p-4">
+                    <div className="bg-white rounded-3xl p-6 shadow-2xl border border-gray-100 w-full max-w-sm text-center">
+                      <h3 className="text-2xl font-black text-gray-800 mb-4">Paused</h3>
+                      <div className="space-y-3">
+                        <button onClick={() => setPauseMenu(false)} className="w-full py-3 rounded-xl bg-indigo-600 text-white font-black">Resume</button>
+                        <button onClick={restartStage} className="w-full py-3 rounded-xl bg-indigo-50 text-indigo-600 font-black border border-indigo-100">Restart Stage</button>
+                        <button onClick={exitAdventure} className="w-full py-3 rounded-xl bg-gray-100 text-gray-600 font-black">Exit Adventure</button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+                {challenge && (
+                  <div className="absolute inset-0 z-50 flex items-center justify-center p-4">
+                    <div className="bg-white rounded-3xl p-5 md:p-7 shadow-2xl border border-gray-100 w-full max-w-xl">
+                      <div className="flex justify-between items-start gap-3 mb-4">
+                        <div>
+                          <p className="text-xs uppercase tracking-widest font-black text-indigo-400">{challenge.question.title}</p>
+                          <h3 className="text-2xl font-black text-gray-800">{challenge.question.instruction}</h3>
+                          {challenge.encounterType === 'door' && <p className="text-sm text-slate-500 font-black mt-1">Unlock seals: {challenge.sequenceCorrect} / {challenge.sequenceTarget}</p>}
+                          {challenge.encounterType === 'checkpoint' && <p className="text-sm text-indigo-500 font-black mt-1">Mini review: {challenge.sequenceCorrect} / {challenge.sequenceTarget}</p>}
+                          {challenge.encounterType === 'boss' && <p className="text-sm text-purple-600 font-black mt-1">Word Guardian HP: {run.bossHp} / {Math.min(10, Math.max(8, run.words.length))}</p>}
+                        </div>
+                        <button onClick={() => playAudio(challenge.question.target.word, 'en-US')} className="p-3 bg-indigo-50 text-indigo-500 rounded-xl hover:bg-indigo-100"><Volume2 size={22} /></button>
+                      </div>
+                      <div className="rounded-2xl bg-gray-50 p-5 mb-4 text-center">
+                        <p className="text-3xl font-black text-gray-900 break-words">{challenge.question.prompt}</p>
+                      </div>
+                      {challenge.question.kind === 'choice' ? (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                          {challenge.question.options.map((option, index) => {
+                            let style = 'bg-white border-gray-100 text-gray-700 hover:border-indigo-300 hover:bg-indigo-50';
+                            if (challenge.feedback) {
+                              style = option.correct ? 'bg-emerald-500 border-emerald-500 text-white' : option.label === challenge.feedback.chosen ? 'bg-red-500 border-red-500 text-white' : 'bg-gray-50 border-transparent text-gray-400';
+                            }
+                            return (
+                              <button key={`${option.id}-${option.label}`} disabled={Boolean(challenge.feedback)} onClick={() => handleAdventureChoice(option)} className={`p-4 rounded-2xl border-2 text-left font-black transition-colors ${style}`}>
+                                <span className="text-indigo-300 mr-2">{index + 1}.</span>{option.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <div className="space-y-3">
+                          <input
+                            ref={spellingInputRef}
+                            value={spellingInput}
+                            onChange={(e) => setSpellingInput(e.target.value)}
+                            onKeyDown={(e) => { if (e.key === 'Enter') handleSpellingSubmit(); }}
+                            disabled={Boolean(challenge.feedback)}
+                            className="w-full p-4 bg-gray-50 rounded-2xl border-2 border-gray-100 focus:border-indigo-500 outline-none text-xl font-black text-gray-800"
+                            placeholder="Type the English word"
+                          />
+                          <button onClick={handleSpellingSubmit} disabled={Boolean(challenge.feedback) || !spellingInput.trim()} className="w-full py-3 bg-indigo-600 text-white rounded-xl font-black disabled:opacity-40">Submit</button>
+                        </div>
+                      )}
+                      {challenge.feedback && (
+                        <div className={`mt-4 p-4 rounded-2xl border ${challenge.feedback.correct ? 'bg-emerald-50 border-emerald-100 text-emerald-700' : 'bg-red-50 border-red-100 text-red-700'}`}>
+                          <p className="font-black">{challenge.feedback.title}</p>
+                          <p className="text-sm font-bold mt-1">{challenge.feedback.message}</p>
+                          {!challenge.feedback.correct && <p className="text-sm mt-2 text-gray-600 font-bold">{challenge.question.target.meaning || 'No meaning'} · {challenge.question.target.mandarin}</p>}
+                          <button onClick={finishEncounter} className="mt-3 px-5 py-2 rounded-xl bg-white font-black border border-current">Continue</button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          }
+
+          return (
+            <div className="h-full flex flex-col bg-gray-50 overflow-hidden">
+              <div className="p-6 bg-white border-b border-gray-100 shrink-0">
+                <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                  <div>
+                    <div className="flex items-center gap-3">
+                      <h2 className="text-3xl font-black text-gray-800">Vocab Adventure</h2>
+                      <span className="px-2 py-1 bg-emerald-100 text-emerald-700 rounded-full text-xs font-black">NEW</span>
+                    </div>
+                    <p className="text-gray-500 font-bold mt-1">Choose an Adventure from your existing folder tree.</p>
+                  </div>
+                  {currentFolderId && <button onClick={() => setCurrentFolderId(currentFolder?.parentId || null)} className="px-4 py-3 rounded-xl bg-gray-100 text-gray-600 font-black hover:bg-indigo-50 hover:text-indigo-600 flex items-center gap-2"><ChevronLeft size={18} /> Back</button>}
+                </div>
+                <div className="flex flex-wrap items-center gap-2 mt-4 text-sm font-bold">
+                  <button onClick={() => setCurrentFolderId(null)} className={`px-3 py-2 rounded-xl ${!currentFolderId ? 'bg-indigo-600 text-white' : 'bg-white text-indigo-600 border border-indigo-100'}`}>Adventures</button>
+                  {breadcrumb.map(folder => (
+                    <React.Fragment key={folder.id}>
+                      <span className="text-gray-300">›</span>
+                      <button onClick={() => setCurrentFolderId(folder.id)} className="px-3 py-2 rounded-xl bg-white text-indigo-600 border border-indigo-100 hover:bg-indigo-50">{folder.name}</button>
+                    </React.Fragment>
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-6 custom-scrollbar pb-safe">
+                {!currentFolderId ? (
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                    {rootFolders.map(folder => {
+                      const count = getSubtreeWordCount(folder.id);
+                      return (
+                        <button key={folder.id} onClick={() => setCurrentFolderId(folder.id)} className="text-left bg-white rounded-3xl border border-gray-100 p-6 shadow-sm hover:border-indigo-300 hover:shadow-md transition-all">
+                          <Folder size={34} className="text-indigo-500 mb-4" />
+                          <h3 className="text-xl font-black text-gray-800">{folder.name}</h3>
+                          <p className="text-sm text-gray-400 font-bold mt-1">{count} words</p>
+                          <p className="text-xs text-indigo-500 font-black mt-4">Open Adventure <ChevronRight size={14} className="inline" /></p>
+                        </button>
+                      );
+                    })}
+                    {!rootFolders.length && <div className="col-span-full text-center text-gray-400 font-bold py-12">No folders yet. Add vocabulary or import a folder backup first.</div>}
+                  </div>
+                ) : (
+                  <div className="space-y-6">
+                    <div>
+                      <h3 className="text-xl font-black text-gray-800 mb-3">Explore Folder</h3>
+                      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                        {childFolders.map(folder => (
+                          <button key={folder.id} onClick={() => setCurrentFolderId(folder.id)} className="text-left bg-white rounded-2xl border border-gray-100 p-5 shadow-sm hover:border-indigo-300 transition-all">
+                            <Folder size={26} className="text-indigo-400 mb-3" />
+                            <h4 className="font-black text-gray-800">{folder.name}</h4>
+                            <p className="text-sm text-gray-400 font-bold">{getSubtreeWordCount(folder.id)} words · {folders.filter(item => item.parentId === folder.id).length} subfolders</p>
+                          </button>
+                        ))}
+                        {!childFolders.length && <div className="text-gray-400 font-bold bg-white rounded-2xl border border-gray-100 p-5">No deeper folders here.</div>}
+                      </div>
+                    </div>
+                    <div>
+                      <h3 className="text-xl font-black text-gray-800 mb-3">Playable Sessions</h3>
+                      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                        {sessionsForCurrentFolder.map(session => {
+                          const stageProgress = getStageProgress(session.folderId, session.chunkIndex);
+                          return (
+                            <div key={session.id} className="bg-white rounded-2xl border border-gray-100 p-5 shadow-sm">
+                              <div className="flex justify-between items-start gap-3">
+                                <div>
+                                  <h4 className="font-black text-gray-800">{session.title}</h4>
+                                  <p className="text-sm text-gray-400 font-bold">{session.words.length} target words</p>
+                                </div>
+                                <span className="text-sm font-black text-yellow-500">{stageProgress?.completed ? `${'★'.repeat(stageProgress.stars || 1)}${'☆'.repeat(3 - (stageProgress.stars || 1))}` : '○○○'}</span>
+                              </div>
+                              {stageProgress?.completed && <p className="text-xs text-emerald-600 font-black mt-2">Completed · Best accuracy {stageProgress.bestAccuracy || 0}%</p>}
+                              <button onClick={() => startSession(session)} className="mt-4 w-full py-3 bg-indigo-600 text-white rounded-xl font-black hover:bg-indigo-700 shadow-sm">Start Stage</button>
+                            </div>
+                          );
+                        })}
+                        {!sessionsForCurrentFolder.length && <div className="text-gray-400 font-bold bg-white rounded-2xl border border-gray-100 p-5">No playable vocabulary in this folder yet.</div>}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
           );
         }
 
@@ -3005,6 +3833,7 @@ const normalizeAnswer = (text) => String(text || '')
                   <NavButton id="study" icon={BookOpen} label="Flashcards" />
                   <NavButton id="quiz" icon={Brain} label="Quiz" />
                   <NavButton id="spelling" icon={Keyboard} label="Spelling Practice" />
+                  <NavButton id="adventure" icon={Zap} label="Adventure NEW" />
                   <div className="h-px bg-gray-100 my-4"></div>
                   <NavButton id="add" icon={Plus} label="Teacher Input" />
                   <NavButton id="list" icon={List} label="Manage Words" />
@@ -3021,6 +3850,7 @@ const normalizeAnswer = (text) => String(text || '')
                     {activeTab === 'study' && <StudyMode words={words} folders={folders} />}
                     {activeTab === 'quiz' && <QuizMode words={words} folders={folders} setIsDirty={setIsCurrentTabDirty} username={username} />}
                     {activeTab === 'spelling' && <SpellingMode words={words} folders={folders} setIsDirty={setIsCurrentTabDirty} username={username} />}
+                    {activeTab === 'adventure' && <AdventureMode words={words} folders={folders} setIsDirty={setIsCurrentTabDirty} username={username} />}
                     {activeTab === 'add' && <AddMode words={words} setWords={setWords} folders={folders} setFolders={setFolders} setActiveTab={setActiveTab} />}
                     {activeTab === 'list' && <ListMode words={words} setWords={setWords} folders={folders} setFolders={setFolders} />}
                 </div>
@@ -3028,6 +3858,7 @@ const normalizeAnswer = (text) => String(text || '')
                     <NavButton id="study" icon={BookOpen} label="Cards" />
                     <NavButton id="quiz" icon={Brain} label="Quiz" />
                     <NavButton id="spelling" icon={Keyboard} label="Spell" />
+                    <NavButton id="adventure" icon={Zap} label="Game" />
                     <NavButton id="add" icon={Plus} label="Add" />
                     <NavButton id="list" icon={List} label="Manage" />
                 </nav>
