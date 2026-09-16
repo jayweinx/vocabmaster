@@ -1,12 +1,17 @@
-import { copyFileSync, existsSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+
+const copyNormalizedHtml = (source, target) => {
+  const html = readFileSync(source, 'utf8').replace(/\r\n?/g, '\n');
+  writeFileSync(target, html);
+};
 
 const builtIndex = existsSync('dist/index.html') ? 'dist/index.html' : 'dist/_vite-pages/app/index.html';
 
 if (existsSync(builtIndex)) {
-  copyFileSync(builtIndex, 'dist/index.html');
-  copyFileSync(builtIndex, 'dist/404.html');
+  copyNormalizedHtml(builtIndex, 'dist/index.html');
+  copyNormalizedHtml(builtIndex, 'dist/404.html');
 }
 
 if (existsSync('dist/_vite-pages/app-ios/index.html')) {
-  copyFileSync('dist/_vite-pages/app-ios/index.html', 'dist/ios.html');
+  copyNormalizedHtml('dist/_vite-pages/app-ios/index.html', 'dist/ios.html');
 }

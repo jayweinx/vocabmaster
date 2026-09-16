@@ -44,6 +44,11 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     steps:
+      # This repository also has GitHub's legacy branch Pages build enabled.
+      # Let that automatic build finish first so this environment-aware artifact
+      # (which contains the Supabase Vite variables) is the final deployment.
+      - name: Wait for legacy Pages build
+        run: sleep 75
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
