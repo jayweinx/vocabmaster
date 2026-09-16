@@ -1,5 +1,8 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { BookOpen, Brain, List, Plus, ChevronRight, ChevronLeft, RotateCw, Check, X, Trash2, Edit2, Save, Languages, Award, Keyboard, Volume2, CheckCircle, History, AlertCircle, Clock, EyeOff, AlertTriangle, Square, CheckSquare, Zap, Delete, Folder, Download, Upload, Info, Search } from 'lucide-react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { BookOpen, Brain, List, Plus, ChevronRight, ChevronLeft, RotateCw, Check, X, Trash2, Edit2, Save, Languages, Award, Keyboard, Volume2, CheckCircle, History, AlertCircle, Clock, EyeOff, AlertTriangle, Square, CheckSquare, Zap, Delete, Folder, Download, Upload, Info, Search, Cloud, CloudOff, LogIn, LogOut, Copy } from 'lucide-react';
+import TeacherLogin from './components/TeacherLogin';
+import { isSupabaseConfigured } from './lib/supabase';
+import { getCurrentSession, isAllowlistedTeacher, loadCloudLibrary, onAuthChange, signOutTeacher, syncCloudLibrary, validateLibrary } from './services/vocabularyService';
 
 const normalizeAnswer = (text) => String(text || '')
           .trim()
@@ -766,9 +769,10 @@ const normalizeAnswer = (text) => String(text || '')
             return { ...progressMap, [word.id]: next };
         };
 
-        function CategorySelectionScreen({ words, folders = [], onSelect, title }) {
-            const [selectedFolderIds, setSelectedFolderIds] = useState(new Set());
-            const [currentFolderId, setCurrentFolderId] = useState(null);
+        function CategorySelectionScreen({ words, folders = [], onSelect, title, initialFolderId = null }) {
+            const validInitialFolderId = initialFolderId && folders.some(folder => folder.id === initialFolderId) ? initialFolderId : null;
+            const [selectedFolderIds, setSelectedFolderIds] = useState(() => new Set(validInitialFolderId ? [validInitialFolderId] : []));
+            const [currentFolderId, setCurrentFolderId] = useState(validInitialFolderId);
 
             const folderWords = useMemo(() => {
                 const map = new Map();
@@ -859,8 +863,8 @@ const normalizeAnswer = (text) => String(text || '')
                         </div>
                     </div>
                     
-                    <div className="px-6 py-2 flex items-center justify-between shrink-0">
-                         <div className="flex items-center gap-3">
+                    <div className="px-6 py-2 flex flex-wrap items-center justify-between gap-3 shrink-0">
+                         <div className="flex flex-wrap items-center gap-3">
                          {currentFolderId && (
                             <button onClick={() => setCurrentFolderId(folders.find(folder => folder.id === currentFolderId)?.parentId || null)} className="flex items-center gap-2 px-3 py-2 rounded-xl bg-white border border-gray-100 text-gray-600 font-bold hover:text-indigo-600 hover:bg-indigo-50 transition-colors">
                                 <ChevronLeft size={18} /> Back
@@ -976,12 +980,15 @@ const normalizeAnswer = (text) => String(text || '')
             );
         }
 
-        function StudyMode({ words, folders }) {
+        function StudyMode({ words, folders, initialFolderId = null }) {
           const [phase, setPhase] = useState('category');
           const [selectedCategories, setSelectedCategories] = useState([]);
           const [activeWords, setActiveWords] = useState([]);
+          const [originalWords, setOriginalWords] = useState([]);
+          const [sessionStatus, setSessionStatus] = useState({});
           const [index, setIndex] = useState(0);
           const [isFlipped, setIsFlipped] = useState(false);
+          const [copyFeedback, setCopyFeedback] = useState('');
           const [wordStatus, setWordStatus] = useState(() => {
             try {
               return JSON.parse(localStorage.getItem('evm_flashcard_status') || '{}');
@@ -991,19 +998,61 @@ const normalizeAnswer = (text) => String(text || '')
           });
 
           useEffect(() => {
-            localStorage.setItem('evm_flashcard_status', JSON.stringify(wordStatus));
+            try { localStorage.setItem('evm_flashcard_status', JSON.stringify(wordStatus)); } catch (error) { console.warn('Unable to save flashcard progress.', error); }
           }, [wordStatus]);
+
+          const startSession = (selected, rememberAsOriginal = true) => {
+            const nextWords = Array.isArray(selected) ? selected : [];
+            setActiveWords(nextWords);
+            if (rememberAsOriginal) setOriginalWords(nextWords);
+            setSessionStatus({});
+            setIndex(0);
+            setIsFlipped(false);
+            setCopyFeedback('');
+            setPhase('studying');
+          };
 
           const markCurrentWord = (status) => {
             if (!activeWords.length) return;
             const currentWord = activeWords[index % activeWords.length];
+            const nextSessionStatus = { ...sessionStatus, [currentWord.id]: status };
+            setSessionStatus(nextSessionStatus);
             setWordStatus(prev => ({ ...prev, [currentWord.id]: status }));
             setIsFlipped(false);
-            if (index < activeWords.length - 1) {
-              window.setTimeout(() => {
-                setIndex(prev => Math.min(prev + 1, activeWords.length - 1));
-              }, 180);
+
+            const unclassifiedIndex = activeWords.findIndex((item, itemIndex) => (
+              itemIndex > index && !nextSessionStatus[item.id]
+            ));
+            const wrappedUnclassifiedIndex = unclassifiedIndex === -1
+              ? activeWords.findIndex(item => !nextSessionStatus[item.id])
+              : unclassifiedIndex;
+            window.setTimeout(() => {
+              if (wrappedUnclassifiedIndex === -1) setPhase('result');
+              else setIndex(wrappedUnclassifiedIndex);
+            }, 180);
+          };
+
+          const copyText = async (text, label) => {
+            try {
+              if (!navigator.clipboard?.writeText) throw new Error('Clipboard API unavailable');
+              await navigator.clipboard.writeText(text);
+            } catch (error) {
+              const textarea = document.createElement('textarea');
+              textarea.value = text;
+              textarea.style.position = 'fixed';
+              textarea.style.opacity = '0';
+              document.body.appendChild(textarea);
+              textarea.focus();
+              textarea.select();
+              const copied = document.execCommand('copy');
+              document.body.removeChild(textarea);
+              if (!copied) {
+                setCopyFeedback('Copy failed — please select the list and copy it manually.');
+                return;
+              }
             }
+            setCopyFeedback(`${label} copied!`);
+            window.setTimeout(() => setCopyFeedback(''), 2200);
           };
 
           if (!words || words.length === 0) {
@@ -1017,24 +1066,71 @@ const normalizeAnswer = (text) => String(text || '')
           }
 
           if (phase === 'category') {
-            return <CategorySelectionScreen words={words} folders={folders} title="Flashcards: Category" onSelect={(folderIds) => { setSelectedCategories(folderIds); setPhase('setup'); }} />;
+            return <CategorySelectionScreen words={words} folders={folders} initialFolderId={initialFolderId} title="Flashcards: Category" onSelect={(folderIds) => { setSelectedCategories(folderIds); setPhase('setup'); }} />;
           }
 
           if (phase === 'setup') {
             return <WordSelectionScreen words={words} folders={folders} selectedFolderIds={selectedCategories} title="Select Flashcards" onBack={() => setPhase('category')} onStart={(selected) => {
-              setActiveWords(selected);
-              setIndex(0);
-              setIsFlipped(false);
-              setPhase('studying');
+              startSession(selected, true);
             }} />;
           }
 
           if (activeWords.length === 0) return <div className="p-10 text-center text-gray-400 font-bold">No words selected.</div>;
 
+          const notYetWords = activeWords.filter(item => sessionStatus[item.id] === 'not_yet');
+          const learnedCount = activeWords.filter(item => sessionStatus[item.id] === 'learned').length;
+          const notYetCount = notYetWords.length;
+
+          if (phase === 'result') {
+            const wordsOnly = notYetWords.map(item => item.word).join('\n');
+            const wordsWithMeaning = notYetWords.map((item, itemIndex) => `${itemIndex + 1}. ${item.word} — ${item.mandarin || item.meaning || 'Meaning unavailable'}`).join('\n');
+            return (
+              <div className="h-full overflow-y-auto bg-gray-50 p-4 pb-safe md:p-8">
+                <div className="mx-auto max-w-2xl animate-in fade-in">
+                  <div className="rounded-[2rem] border border-gray-100 bg-white p-6 text-center shadow-xl md:p-10">
+                    <div className="mx-auto mb-5 flex h-20 w-20 items-center justify-center rounded-full bg-indigo-100 text-indigo-600"><Award size={42} /></div>
+                    <p className="mb-2 text-xs font-black uppercase tracking-[0.2em] text-indigo-400">Flashcards Completed</p>
+                    <h2 className="mb-6 text-3xl font-black text-gray-800 md:text-4xl">{activeWords.length} Words Reviewed</h2>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="rounded-2xl bg-cyan-50 p-4 text-cyan-700"><p className="text-2xl font-black">✓ {learnedCount}</p><p className="text-sm font-bold">Learned</p></div>
+                      <div className="rounded-2xl bg-red-50 p-4 text-red-600"><p className="text-2xl font-black">✕ {notYetCount}</p><p className="text-sm font-bold">Not Yet</p></div>
+                    </div>
+                  </div>
+
+                  <div className="mt-5 rounded-[2rem] border border-gray-100 bg-white p-5 shadow-sm md:p-7">
+                    {notYetWords.length ? (
+                      <>
+                        <h3 className="mb-4 text-2xl font-black text-gray-800">Words You Haven't Learned Yet</h3>
+                        <ol className="mb-5 space-y-2">
+                          {notYetWords.map((item, itemIndex) => (
+                            <li key={item.id} className="rounded-xl bg-red-50/60 px-4 py-3 font-bold text-gray-700 break-words">
+                              <span className="mr-2 text-red-400">{itemIndex + 1}.</span>{item.word}<span className="font-medium text-gray-400"> — {item.mandarin || item.meaning || 'Meaning unavailable'}</span>
+                            </li>
+                          ))}
+                        </ol>
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                          <button onClick={() => copyText(wordsOnly, 'Words')} className="flex min-h-12 items-center justify-center gap-2 rounded-2xl border-2 border-indigo-100 bg-indigo-50 px-4 py-3 font-black text-indigo-600 hover:bg-indigo-100"><Copy size={20} /> Copy Words Only</button>
+                          <button onClick={() => copyText(wordsWithMeaning, 'Words + meaning')} className="flex min-h-12 items-center justify-center gap-2 rounded-2xl border-2 border-cyan-100 bg-cyan-50 px-4 py-3 font-black text-cyan-700 hover:bg-cyan-100"><Copy size={20} /> Copy Words + Meaning</button>
+                        </div>
+                        {copyFeedback && <p className={`mt-3 text-center text-sm font-black ${copyFeedback.startsWith('Copy failed') ? 'text-red-500' : 'text-emerald-600'}`}>{copyFeedback}</p>}
+                      </>
+                    ) : (
+                      <div className="py-5 text-center"><p className="text-4xl">🎉</p><h3 className="mt-3 text-2xl font-black text-emerald-600">All words learned!</h3><p className="mt-1 font-medium text-gray-400">Perfect work in this session.</p></div>
+                    )}
+                  </div>
+
+                  <div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-3">
+                    {notYetWords.length > 0 && <button onClick={() => startSession(notYetWords, false)} className="min-h-14 rounded-2xl bg-red-500 px-4 py-3 font-black text-white shadow-md hover:bg-red-600">Review Not Yet</button>}
+                    <button onClick={() => startSession(originalWords.length ? originalWords : activeWords, true)} className="min-h-14 rounded-2xl bg-indigo-600 px-4 py-3 font-black text-white shadow-md hover:bg-indigo-700">Study Again</button>
+                    <button onClick={() => { setPhase('category'); setActiveWords([]); setOriginalWords([]); setSessionStatus({}); setIndex(0); }} className="min-h-14 rounded-2xl border-2 border-gray-200 bg-white px-4 py-3 font-black text-gray-600 hover:bg-gray-100">Back to Folders</button>
+                  </div>
+                </div>
+              </div>
+            );
+          }
+
           const current = activeWords[index % activeWords.length];
-          const currentStatus = wordStatus[current.id];
-          const learnedCount = activeWords.filter(w => wordStatus[w.id] === 'learned').length;
-          const notYetCount = activeWords.filter(w => wordStatus[w.id] === 'not_yet').length;
+          const currentStatus = sessionStatus[current.id];
 
           return (
             <div className="flex flex-col h-full max-w-2xl mx-auto w-full p-4 md:p-8 animate-in fade-in">
@@ -2994,7 +3090,34 @@ const normalizeAnswer = (text) => String(text || '')
                 meaning: '',
                 category: 'General'
             });
+            const [shareFeedback, setShareFeedback] = useState('');
             const fileInputRef = useRef(null);
+
+            const copyShareLink = async (folderId) => {
+                const shareUrl = new URL(window.location.href);
+                shareUrl.search = '';
+                shareUrl.hash = '';
+                shareUrl.searchParams.set('folder', String(folderId));
+                try {
+                    if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable');
+                    await navigator.clipboard.writeText(shareUrl.toString());
+                } catch (error) {
+                    const textarea = document.createElement('textarea');
+                    textarea.value = shareUrl.toString();
+                    textarea.style.position = 'fixed';
+                    textarea.style.opacity = '0';
+                    document.body.appendChild(textarea);
+                    textarea.select();
+                    const copied = document.execCommand('copy');
+                    document.body.removeChild(textarea);
+                    if (!copied) {
+                        setShareFeedback('Copy failed. Please copy the address from your browser.');
+                        return;
+                    }
+                }
+                setShareFeedback('Share link copied!');
+                window.setTimeout(() => setShareFeedback(''), 2200);
+            };
 
             const pendingImportSummary = useMemo(() => {
                 if (!pendingImport) return null;
@@ -3574,6 +3697,11 @@ const normalizeAnswer = (text) => String(text || '')
                                  </p>
                              </div>
                              <div className="flex flex-wrap gap-2">
+                                {currentFolderId && currentFolderTotalWords > 0 && (
+                                    <button onClick={() => copyShareLink(currentFolderId)} className="px-3 py-2 rounded-xl bg-cyan-50 border border-cyan-100 text-cyan-700 font-bold hover:bg-cyan-100 flex items-center gap-2">
+                                        <Copy size={16} /> Copy Share Link
+                                    </button>
+                                )}
                                 {currentFolderId && (
                                     <button onClick={() => goToFolder(currentFolder?.parentId || null)} className="px-3 py-2 rounded-xl bg-white border border-gray-100 text-gray-600 font-bold hover:bg-indigo-50 hover:text-indigo-600 flex items-center gap-2">
                                         <ChevronLeft size={18} /> Back
@@ -3630,6 +3758,7 @@ const normalizeAnswer = (text) => String(text || '')
                                                              <div className="absolute right-0 top-10 z-20 w-44 bg-white border border-gray-100 rounded-xl shadow-xl p-2">
                                                                  <button onClick={(e) => { e.stopPropagation(); openRenameFolder(folder); }} className="w-full text-left px-3 py-2 rounded-lg text-sm font-bold text-gray-700 hover:bg-indigo-50 hover:text-indigo-600">Rename Folder</button>
                                                                  <button onClick={(e) => { e.stopPropagation(); openMoveFolder(folder); }} className="w-full text-left px-3 py-2 rounded-lg text-sm font-bold text-gray-700 hover:bg-indigo-50 hover:text-indigo-600">Move Folder</button>
+                                                                 {totalWords > 0 && <button onClick={(e) => { e.stopPropagation(); copyShareLink(folder.id); setActiveFolderMenuId(null); }} className="w-full text-left px-3 py-2 rounded-lg text-sm font-bold text-cyan-700 hover:bg-cyan-50">Copy Share Link</button>}
                                                                  <button onClick={(e) => { e.stopPropagation(); openDeleteFolder(folder); }} className="w-full text-left px-3 py-2 rounded-lg text-sm font-bold text-red-600 hover:bg-red-50">Delete Folder</button>
                                                              </div>
                                                          )}
@@ -3766,47 +3895,159 @@ const normalizeAnswer = (text) => String(text || '')
                     <datalist id="vocab-categories">
                         {editCategoryOptions.map(c => <option key={c} value={c} />)}
                     </datalist>
+                    {shareFeedback && <div className="absolute bottom-4 left-1/2 z-40 -translate-x-1/2 rounded-xl bg-gray-900 px-4 py-3 text-sm font-black text-white shadow-xl">{shareFeedback}</div>}
                 </div>
             );
         }
 
         function App() {
+          const readStoredArray = (key) => {
+            try {
+              const parsed = JSON.parse(localStorage.getItem(key) || '[]');
+              return Array.isArray(parsed) ? parsed : [];
+            } catch (error) {
+              console.warn(`Unable to read ${key}.`, error);
+              return [];
+            }
+          };
+          const readCloudCache = () => {
+            try {
+              const parsed = JSON.parse(localStorage.getItem('en_vocab_cloud_cache') || 'null');
+              return parsed && Array.isArray(parsed.words) && Array.isArray(parsed.folders) ? parsed : null;
+            } catch (error) {
+              return null;
+            }
+          };
+          const initialLibraryRef = useRef(null);
+          if (!initialLibraryRef.current) {
+            const legacy = { words: readStoredArray('en_vocab_master_data'), folders: readStoredArray('en_vocab_master_folders') };
+            initialLibraryRef.current = isSupabaseConfigured ? (readCloudCache() || { words: [], folders: [] }) : legacy;
+          }
+
           const [username, setUsername] = useState(() => { try { return localStorage.getItem('evm_user') || 'Student'; } catch (error) { return 'Student'; } });
           const [showNameEditor, setShowNameEditor] = useState(false);
           const [draftUsername, setDraftUsername] = useState(username);
           const [activeTab, setActiveTab] = useState('study');
           const [pendingTab, setPendingTab] = useState(null);
           const [isCurrentTabDirty, setIsCurrentTabDirty] = useState(false);
-          const [words, setWords] = useState(() => {
+          const [words, setWordsState] = useState(initialLibraryRef.current.words);
+          const [folders, setFoldersState] = useState(initialLibraryRef.current.folders);
+          const [cloudStatus, setCloudStatus] = useState(isSupabaseConfigured ? 'loading' : 'unconfigured');
+          const [cloudMessage, setCloudMessage] = useState('');
+          const [cloudReady, setCloudReady] = useState(!isSupabaseConfigured);
+          const [session, setSession] = useState(null);
+          const [isTeacher, setIsTeacher] = useState(false);
+          const [showTeacherLogin, setShowTeacherLogin] = useState(false);
+          const [migrationDialog, setMigrationDialog] = useState(null);
+          const [migrationMessage, setMigrationMessage] = useState('');
+          const [syncNonce, setSyncNonce] = useState(0);
+          const pendingCloudWriteRef = useRef(false);
+          const changeVersionRef = useRef(0);
+          const cloudSyncQueueRef = useRef(Promise.resolve());
+          const latestLibraryRef = useRef({ words, folders });
+          latestLibraryRef.current = { words, folders };
+
+          const setWords = useCallback((value) => {
+            pendingCloudWriteRef.current = true;
+            changeVersionRef.current += 1;
+            setWordsState(value);
+          }, []);
+
+          const setFolders = useCallback((value) => {
+            pendingCloudWriteRef.current = true;
+            changeVersionRef.current += 1;
+            setFoldersState(value);
+          }, []);
+
+          const reloadCloudLibrary = useCallback(async () => {
+            if (!isSupabaseConfigured) return;
+            setCloudStatus('loading');
+            setCloudMessage('Loading the shared library…');
             try {
-              const saved = localStorage.getItem('en_vocab_master_data');
-              const parsed = saved ? JSON.parse(saved) : [];
-              return Array.isArray(parsed) ? parsed : [];
+              const library = await loadCloudLibrary();
+              pendingCloudWriteRef.current = false;
+              setWordsState(library.words);
+              setFoldersState(library.folders);
+              localStorage.setItem('en_vocab_cloud_cache', JSON.stringify(library));
+              setCloudStatus('ready');
+              setCloudMessage('Shared library is up to date.');
             } catch (error) {
-              console.warn('Vocabulary data was corrupted, resetting to empty list.', error);
-              return [];
+              const cached = readCloudCache();
+              if (cached) {
+                setWordsState(cached.words);
+                setFoldersState(cached.folders);
+                setCloudMessage(`Cloud unavailable. Showing the last downloaded library. ${error.message}`);
+              } else {
+                setWordsState([]);
+                setFoldersState([]);
+                setCloudMessage(`Cloud library could not be loaded. ${error.message}`);
+              }
+              setCloudStatus('error');
+            } finally {
+              setCloudReady(true);
             }
-          });
-          const [folders, setFolders] = useState(() => {
+          }, []);
+
+          const applySession = useCallback(async (nextSession) => {
+            setSession(nextSession || null);
+            if (!nextSession?.user) {
+              setIsTeacher(false);
+              return false;
+            }
             try {
-              const saved = localStorage.getItem('en_vocab_master_folders');
-              const parsed = saved ? JSON.parse(saved) : [];
-              return Array.isArray(parsed) ? parsed : [];
+              const allowed = await isAllowlistedTeacher(nextSession.user.id);
+              setIsTeacher(allowed);
+              if (!allowed) setCloudMessage('This account is signed in but is not in the teacher allowlist.');
+              return allowed;
             } catch (error) {
-              console.warn('Folder data was corrupted, resetting to empty list.', error);
-              return [];
+              setIsTeacher(false);
+              setCloudMessage(error.message);
+              return false;
             }
-          });
+          }, []);
 
           useEffect(() => {
-            try { localStorage.setItem('en_vocab_master_data', JSON.stringify(words)); } catch (error) { console.warn('Unable to save vocabulary data.', error); }
-          }, [words]);
+            if (!isSupabaseConfigured) return undefined;
+            reloadCloudLibrary();
+            getCurrentSession().then(applySession).catch(error => setCloudMessage(error.message));
+            return onAuthChange(applySession);
+          }, [applySession, reloadCloudLibrary]);
 
           useEffect(() => {
-            try { localStorage.setItem('en_vocab_master_folders', JSON.stringify(folders)); } catch (error) { console.warn('Unable to save folder data.', error); }
-          }, [folders]);
+            try {
+              if (isSupabaseConfigured && cloudReady) localStorage.setItem('en_vocab_cloud_cache', JSON.stringify({ words, folders }));
+              if (!isSupabaseConfigured) {
+                localStorage.setItem('en_vocab_master_data', JSON.stringify(words));
+                localStorage.setItem('en_vocab_master_folders', JSON.stringify(folders));
+              }
+            } catch (error) { console.warn('Unable to cache vocabulary data.', error); }
+          }, [words, folders, cloudReady]);
 
           useEffect(() => {
+            if (!isSupabaseConfigured || !cloudReady || !isTeacher || !pendingCloudWriteRef.current) return undefined;
+            const version = changeVersionRef.current;
+            setCloudStatus('saving');
+            setCloudMessage('Saving changes to the shared library…');
+            const timer = window.setTimeout(() => {
+              const snapshot = latestLibraryRef.current;
+              cloudSyncQueueRef.current = cloudSyncQueueRef.current
+                .catch(() => undefined)
+                .then(() => syncCloudLibrary(snapshot))
+                .then((result) => {
+                  if (version === changeVersionRef.current) pendingCloudWriteRef.current = false;
+                  setCloudStatus('ready');
+                  setCloudMessage(`Saved ${result.folderCount} folders and ${result.wordCount} words to the cloud.`);
+                })
+                .catch((error) => {
+                  setCloudStatus('error');
+                  setCloudMessage(`Your on-screen change has not reached the cloud. ${error.message}`);
+                });
+            }, 450);
+            return () => window.clearTimeout(timer);
+          }, [words, folders, isTeacher, cloudReady, syncNonce]);
+
+          useEffect(() => {
+            if (isSupabaseConfigured) return;
             if (!words.length) return;
             const needsMigration = words.some(word => !word.folderId) || !folders.length;
             if (!needsMigration) return;
@@ -3832,6 +4073,77 @@ const normalizeAnswer = (text) => String(text || '')
             setUsername(cleaned || 'Student');
             setShowNameEditor(false);
           };
+
+          const sharedFolderParam = useMemo(() => {
+            const requestedId = new URLSearchParams(window.location.search).get('folder');
+            return requestedId && folders.some(folder => String(folder.id) === requestedId) ? requestedId : null;
+          }, [folders]);
+
+          const prepareLocalMigration = () => {
+            let localWords = readStoredArray('en_vocab_master_data').map(item => ({ ...item, id: item.id ?? makeId('word') }));
+            let localFolders = readStoredArray('en_vocab_master_folders').map(item => ({ ...item, id: item.id ?? makeId('folder') }));
+            if (localWords.some(item => !item.folderId) || !localFolders.length) {
+              const migrated = buildLegacyFolders(localWords, localFolders);
+              localWords = migrated.words;
+              localFolders = migrated.folders;
+            }
+            const library = { words: localWords, folders: localFolders };
+            const errors = validateLibrary(library);
+            if (errors.length) {
+              setMigrationMessage(`Local library cannot be published yet: ${errors.slice(0, 5).join(' ')}`);
+              return;
+            }
+            if (!localWords.length && !localFolders.length) {
+              setMigrationMessage('No existing local vocabulary was found in this browser. Nothing was uploaded.');
+              return;
+            }
+            setMigrationMessage('');
+            setMigrationDialog({ library, publishing: false, error: '' });
+          };
+
+          const publishLocalLibrary = async () => {
+            if (!migrationDialog?.library) return;
+            setMigrationDialog(current => ({ ...current, publishing: true, error: '' }));
+            try {
+              const result = await syncCloudLibrary(migrationDialog.library);
+              pendingCloudWriteRef.current = false;
+              setWordsState(migrationDialog.library.words);
+              setFoldersState(migrationDialog.library.folders);
+              localStorage.setItem('en_vocab_cloud_cache', JSON.stringify(migrationDialog.library));
+              setMigrationDialog(null);
+              setCloudStatus('ready');
+              setCloudMessage(`Published ${result.folderCount} folders and ${result.wordCount} words from this browser.`);
+            } catch (error) {
+              setMigrationDialog(current => ({ ...current, publishing: false, error: error.message }));
+            }
+          };
+
+          const handleTeacherSignOut = async () => {
+            try {
+              if (pendingCloudWriteRef.current) {
+                setCloudStatus('saving');
+                setCloudMessage('Saving changes before signing out…');
+                await syncCloudLibrary(latestLibraryRef.current);
+                pendingCloudWriteRef.current = false;
+              }
+              await signOutTeacher();
+              setIsTeacher(false);
+              setSession(null);
+              if (activeTab === 'add' || activeTab === 'list') setActiveTab('study');
+              setCloudMessage('Signed out. Student mode is active.');
+            } catch (error) {
+              setCloudStatus('error');
+              setCloudMessage(error.message);
+            }
+          };
+
+          const TeacherAccessButton = ({ mobile = false }) => (
+            isTeacher ? (
+              <button type="button" onClick={handleTeacherSignOut} className={`${mobile ? 'px-3 py-1.5 text-xs' : 'mt-2 w-full px-4 py-3'} flex items-center justify-center gap-2 rounded-2xl bg-white/15 font-black text-white hover:bg-white/25`} title={session?.user?.email || 'Teacher'}><LogOut size={mobile ? 15 : 18} /> Sign Out</button>
+            ) : (
+              <button type="button" onClick={() => isSupabaseConfigured ? setShowTeacherLogin(true) : setCloudMessage('Add the Supabase environment values and rebuild before teacher login can be used.')} className={`${mobile ? 'px-3 py-1.5 text-xs' : 'mt-2 w-full px-4 py-3'} flex items-center justify-center gap-2 rounded-2xl bg-white/15 font-black text-white hover:bg-white/25`}><LogIn size={mobile ? 15 : 18} /> Teacher Login</button>
+            )
+          );
 
           const StudentNameButton = ({ mobile = false }) => (
             <button
@@ -3872,40 +4184,66 @@ const normalizeAnswer = (text) => String(text || '')
                   <Languages size={40} className="mx-auto mb-4" />
                   <h1 className="text-xl font-black leading-tight uppercase tracking-tighter">Vocab Master</h1>
                   <StudentNameButton />
+                  <TeacherAccessButton />
                 </div>
                 <div className="flex-1 overflow-y-auto custom-scrollbar">
                   <NavButton id="study" icon={BookOpen} label="Flashcards" />
                   <NavButton id="quiz" icon={Brain} label="Quiz" />
                   <NavButton id="spelling" icon={Keyboard} label="Spelling Practice" />
                   <NavButton id="adventure" icon={Zap} label="Adventure NEW" />
-                  <div className="h-px bg-gray-100 my-4"></div>
-                  <NavButton id="add" icon={Plus} label="Teacher Input" />
-                  <NavButton id="list" icon={List} label="Manage Words" />
+                  {isTeacher && <><div className="h-px bg-gray-100 my-4"></div><NavButton id="add" icon={Plus} label="Teacher Input" /><NavButton id="list" icon={List} label="Manage Words" /></>}
                 </div>
               </aside>
 
               <main className="flex-1 min-h-0 relative flex flex-col overflow-hidden">
                 <header className="md:hidden bg-indigo-600 text-white p-4 text-center font-black flex justify-between items-center">
                     <span className="text-lg uppercase tracking-tighter">Vocab Master</span>
-                    <StudentNameButton mobile />
+                    <div className="flex items-center gap-2"><StudentNameButton mobile /><TeacherAccessButton mobile /></div>
                 </header>
-                
+
+                <div className={`shrink-0 border-b px-4 py-2 text-xs font-bold flex flex-wrap items-center justify-between gap-2 ${cloudStatus === 'error' || cloudStatus === 'unconfigured' ? 'border-amber-100 bg-amber-50 text-amber-700' : cloudStatus === 'saving' || cloudStatus === 'loading' ? 'border-indigo-100 bg-indigo-50 text-indigo-700' : 'border-emerald-100 bg-emerald-50 text-emerald-700'}`}>
+                  <span className="flex min-w-0 items-center gap-2">{cloudStatus === 'error' || cloudStatus === 'unconfigured' ? <CloudOff size={16} className="shrink-0" /> : <Cloud size={16} className="shrink-0" />}<span className="break-words">{cloudStatus === 'unconfigured' ? 'Cloud setup required. Local study data remains available.' : cloudMessage || 'Shared library ready.'}</span></span>
+                  <span className="flex gap-2">
+                    {cloudStatus === 'error' && <button onClick={() => pendingCloudWriteRef.current && isTeacher ? setSyncNonce(value => value + 1) : reloadCloudLibrary()} className="rounded-lg bg-white px-3 py-1 text-indigo-600 shadow-sm">{pendingCloudWriteRef.current && isTeacher ? 'Retry Save' : 'Retry Load'}</button>}
+                    {isTeacher && <button onClick={prepareLocalMigration} className="rounded-lg bg-white px-3 py-1 text-indigo-600 shadow-sm">Publish Local Library to Cloud</button>}
+                  </span>
+                </div>
+
                 <div className="flex-1 overflow-auto relative">
-                    {activeTab === 'study' && <StudyMode words={words} folders={folders} />}
-                    {activeTab === 'quiz' && <QuizMode words={words} folders={folders} setIsDirty={setIsCurrentTabDirty} username={username} />}
-                    {activeTab === 'spelling' && <SpellingMode words={words} folders={folders} setIsDirty={setIsCurrentTabDirty} username={username} />}
-                    {activeTab === 'adventure' && <AdventureMode words={words} folders={folders} setIsDirty={setIsCurrentTabDirty} username={username} />}
-                    {activeTab === 'add' && <AddMode words={words} setWords={setWords} folders={folders} setFolders={setFolders} setActiveTab={setActiveTab} />}
-                    {activeTab === 'list' && <ListMode words={words} setWords={setWords} folders={folders} setFolders={setFolders} />}
+                    {cloudStatus === 'loading' && !cloudReady ? (
+                      <div className="flex h-full flex-col items-center justify-center p-8 text-center"><RotateCw size={46} className="mb-4 animate-spin text-indigo-400" /><h2 className="text-2xl font-black text-gray-800">Loading shared library</h2><p className="mt-2 font-medium text-gray-400">Connecting to the teacher's vocabulary collection…</p></div>
+                    ) : <>
+                      {activeTab === 'study' && <StudyMode words={words} folders={folders} initialFolderId={sharedFolderParam} />}
+                      {activeTab === 'quiz' && <QuizMode words={words} folders={folders} setIsDirty={setIsCurrentTabDirty} username={username} />}
+                      {activeTab === 'spelling' && <SpellingMode words={words} folders={folders} setIsDirty={setIsCurrentTabDirty} username={username} />}
+                      {activeTab === 'adventure' && <AdventureMode words={words} folders={folders} setIsDirty={setIsCurrentTabDirty} username={username} />}
+                      {isTeacher && activeTab === 'add' && <AddMode words={words} setWords={setWords} folders={folders} setFolders={setFolders} setActiveTab={setActiveTab} />}
+                      {isTeacher && activeTab === 'list' && <ListMode words={words} setWords={setWords} folders={folders} setFolders={setFolders} />}
+                    </>}
                 </div>
                 <nav className="md:hidden bg-white border-t flex justify-between shadow-lg z-20 shrink-0 pb-safe overflow-x-auto custom-scrollbar">
                     <NavButton id="study" icon={BookOpen} label="Cards" />
                     <NavButton id="quiz" icon={Brain} label="Quiz" />
                     <NavButton id="spelling" icon={Keyboard} label="Spell" />
                     <NavButton id="adventure" icon={Zap} label="Game" />
-                    <NavButton id="add" icon={Plus} label="Add" />
-                    <NavButton id="list" icon={List} label="Manage" />
+                    {isTeacher && <><NavButton id="add" icon={Plus} label="Add" /><NavButton id="list" icon={List} label="Manage" /></>}
                 </nav>
+
+                {showTeacherLogin && <TeacherLogin onClose={() => setShowTeacherLogin(false)} onSignedIn={async (nextSession) => { await applySession(nextSession); setShowTeacherLogin(false); }} />}
+
+                {migrationDialog && (
+                  <div className="absolute inset-0 z-[145] flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
+                    <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl md:p-8">
+                      <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-indigo-100 text-indigo-600"><Upload size={30} /></div>
+                      <h2 className="text-2xl font-black text-gray-800">Publish Local Library?</h2>
+                      <p className="mt-2 font-medium text-gray-500">This will replace the current cloud library with the data saved in this browser: <strong>{migrationDialog.library.folders.length} folders</strong> and <strong>{migrationDialog.library.words.length} words</strong>. Existing IDs and folder hierarchy will be preserved.</p>
+                      {migrationDialog.error && <p className="mt-4 rounded-xl bg-red-50 p-3 text-sm font-bold text-red-600">{migrationDialog.error}</p>}
+                      <div className="mt-6 grid grid-cols-2 gap-3"><button disabled={migrationDialog.publishing} onClick={() => setMigrationDialog(null)} className="rounded-xl border-2 border-gray-200 py-3 font-black text-gray-600">Cancel</button><button disabled={migrationDialog.publishing} onClick={publishLocalLibrary} className="rounded-xl bg-indigo-600 py-3 font-black text-white shadow-md disabled:opacity-50">{migrationDialog.publishing ? 'Publishing…' : 'Publish to Cloud'}</button></div>
+                    </div>
+                  </div>
+                )}
+
+                {migrationMessage && <div className="absolute bottom-24 left-1/2 z-[130] w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 rounded-2xl bg-gray-900 p-4 text-center text-sm font-bold text-white shadow-xl md:bottom-6">{migrationMessage}<button onClick={() => setMigrationMessage('')} className="ml-3 underline">Dismiss</button></div>}
 
                 {showNameEditor && (
                   <div className="absolute inset-0 z-[120] flex items-center justify-center bg-black/50 backdrop-blur-sm animate-in fade-in p-4">
