@@ -109,6 +109,8 @@ const normalizeAnswer = (text) => String(text || '')
 
         const hasChineseText = (text) => /[\u3400-\u9fff]/.test(String(text || ''));
         const cleanCellText = (text) => String(text || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+        const getMeaningParts = (item) => [cleanCellText(item?.meaning), cleanCellText(item?.mandarin)].filter(Boolean);
+        const formatWordWithMeanings = (item) => [cleanCellText(item?.word), ...getMeaningParts(item)].filter(Boolean).join(' — ');
         const normalizeWordKey = (text) => cleanCellText(text).toLowerCase();
         const normalizeCategoryKey = (text) => cleanCellText(text || 'General').toLowerCase();
         const makeImportKey = (word, category) => `${normalizeCategoryKey(category)}::${normalizeWordKey(word)}`;
@@ -1083,7 +1085,7 @@ const normalizeAnswer = (text) => String(text || '')
 
           if (phase === 'result') {
             const wordsOnly = notYetWords.map(item => item.word).join('\n');
-            const wordsWithMeaning = notYetWords.map((item, itemIndex) => `${itemIndex + 1}. ${item.word} — ${item.mandarin || item.meaning || 'Meaning unavailable'}`).join('\n');
+            const wordsWithMeaning = notYetWords.map((item, itemIndex) => `${itemIndex + 1}. ${formatWordWithMeanings(item)}`).join('\n');
             return (
               <div className="h-full overflow-y-auto bg-gray-50 p-4 pb-safe md:p-8">
                 <div className="mx-auto max-w-2xl animate-in fade-in">
@@ -1103,8 +1105,14 @@ const normalizeAnswer = (text) => String(text || '')
                         <h3 className="mb-4 text-2xl font-black text-gray-800">Words You Haven't Learned Yet</h3>
                         <ol className="mb-5 space-y-2">
                           {notYetWords.map((item, itemIndex) => (
-                            <li key={item.id} className="rounded-xl bg-red-50/60 px-4 py-3 font-bold text-gray-700 break-words">
-                              <span className="mr-2 text-red-400">{itemIndex + 1}.</span>{item.word}<span className="font-medium text-gray-400"> — {item.mandarin || item.meaning || 'Meaning unavailable'}</span>
+                            <li key={item.id} className="rounded-xl bg-red-50/60 px-4 py-3 text-gray-700">
+                              <div className="flex items-start gap-2">
+                                <span className="shrink-0 font-bold text-red-400">{itemIndex + 1}.</span>
+                                <div className="min-w-0">
+                                  <p className="break-words font-bold">{item.word}</p>
+                                  {getMeaningParts(item).length > 0 && <p className="mt-0.5 break-words text-sm font-medium leading-snug text-gray-400">{getMeaningParts(item).join(' · ')}</p>}
+                                </div>
+                              </div>
                             </li>
                           ))}
                         </ol>
