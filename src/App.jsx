@@ -773,7 +773,9 @@ const normalizeAnswer = (text) => String(text || '')
 
         function CategorySelectionScreen({ words, folders = [], onSelect, title, initialFolderId = null }) {
             const validInitialFolderId = initialFolderId && folders.some(folder => folder.id === initialFolderId) ? initialFolderId : null;
-            const [selectedFolderIds, setSelectedFolderIds] = useState(() => new Set(validInitialFolderId ? [validInitialFolderId] : []));
+            const childFolderCount = (folderId) => folders.filter(folder => folder.parentId === folderId).length;
+            const initialFolderIsLeaf = validInitialFolderId ? childFolderCount(validInitialFolderId) === 0 : false;
+            const [selectedFolderIds, setSelectedFolderIds] = useState(() => new Set(validInitialFolderId && !initialFolderIsLeaf ? [validInitialFolderId] : []));
             const [currentFolderId, setCurrentFolderId] = useState(validInitialFolderId);
 
             const folderWords = useMemo(() => {
@@ -801,8 +803,6 @@ const normalizeAnswer = (text) => String(text || '')
                 const ids = getFolderAndDescendantIds(folderId, folders);
                 return words.filter(word => word.folderId && ids.includes(word.folderId)).length;
             };
-
-            const childFolderCount = (folderId) => folders.filter(folder => folder.parentId === folderId).length;
 
             const selectedWords = useMemo(() => getSelectedWordsForFolders(words, folders, selectedFolderIds), [words, folders, selectedFolderIds]);
 
@@ -833,6 +833,8 @@ const normalizeAnswer = (text) => String(text || '')
                 ? subtreeWordCount(currentFolderId)
                 : words.filter(word => word.folderId && folders.some(folder => !folder.parentId && getFolderAndDescendantIds(folder.id, folders).includes(word.folderId))).length;
             const selectedInScope = currentScopeIds.every(id => getSelectionState(id) === 'all') && currentScopeIds.length > 0;
+            const currentFolder = currentFolderId ? folders.find(folder => folder.id === currentFolderId) : null;
+            const currentFolderIsLeaf = currentFolder ? childFolderCount(currentFolder.id) === 0 : false;
 
             const handleSelectAll = () => {
                 setSelectedFolderIds(prev => {
@@ -872,40 +874,49 @@ const normalizeAnswer = (text) => String(text || '')
                                 <ChevronLeft size={18} /> Back
                             </button>
                          )}
-                         <button onClick={handleSelectAll} className="flex items-center gap-2 text-indigo-600 font-bold hover:text-indigo-800 transition-colors">
-                            {selectedInScope ? <CheckSquare size={20} /> : <Square size={20} />}
-                            {selectedInScope ? "Deselect All" : currentFolderId ? `Select All in ${breadcrumb[breadcrumb.length - 1]?.name || 'Folder'}` : "Select All Folders"}
-                        </button>
+                          <button onClick={handleSelectAll} className="flex items-center gap-2 text-indigo-600 font-bold hover:text-indigo-800 transition-colors">
+                             {selectedInScope ? <CheckSquare size={20} /> : <Square size={20} />}
+                             {currentFolderIsLeaf
+                                 ? selectedInScope ? "Deselect This Folder" : "Select This Folder"
+                                 : selectedInScope ? "Deselect All" : currentFolderId ? `Select All in ${breadcrumb[breadcrumb.length - 1]?.name || 'Folder'}` : "Select All Folders"}
+                         </button>
                          </div>
                         <span className="text-sm font-bold text-gray-400">{selectedFolderIds.size} folders selected · {selectedWords.length} words</span>
                     </div>
 
                     <div className="p-4 md:p-6 md:flex-1 md:overflow-y-auto custom-scrollbar">
                         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                            {directChildren.map(folder => {
-                                const selectionState = getSelectionState(folder.id);
-                                const isSelected = selectionState === 'all';
-                                const isPartial = selectionState === 'partial';
-                                return (
-                                    <div key={folder.id} onClick={() => setCurrentFolderId(folder.id)} className={`p-6 border-2 rounded-3xl shadow-sm transition-all text-left group relative cursor-pointer ${isSelected ? 'border-indigo-500 bg-indigo-50' : isPartial ? 'border-yellow-300 bg-yellow-50' : 'border-gray-100 bg-white hover:border-indigo-300'}`}>
+                             {directChildren.map(folder => {
+                                 const selectionState = getSelectionState(folder.id);
+                                 const isSelected = selectionState === 'all';
+                                 const isPartial = selectionState === 'partial';
+                                 const subfolderCount = childFolderCount(folder.id);
+                                 const isLeaf = subfolderCount === 0;
+                                 const wordCount = subtreeWordCount(folder.id);
+                                 return (
+                                     <div key={folder.id} onClick={() => isLeaf ? toggleFolder(folder.id) : setCurrentFolderId(folder.id)} className={`p-6 border-2 rounded-3xl shadow-sm transition-all text-left group relative cursor-pointer ${isSelected ? 'border-indigo-500 bg-indigo-50' : isPartial ? 'border-yellow-300 bg-yellow-50' : 'border-gray-100 bg-white hover:border-indigo-300'}`}>
                                         <div className="flex justify-between items-start mb-4">
                                             <Folder className={`${isSelected ? 'text-indigo-600' : 'text-indigo-400 group-hover:text-indigo-500'} transition-colors`} size={32} />
                                             <button onClick={(e) => { e.stopPropagation(); toggleFolder(folder.id); }} className="w-9 h-9 rounded-xl bg-white border-2 border-gray-100 flex items-center justify-center text-indigo-600 shadow-sm" aria-label={`Select ${folder.name}`}>
                                                 {isSelected ? <CheckSquare size={22} /> : isPartial ? <span className="text-xl leading-none">◩</span> : <Square size={22} className="text-gray-300" />}
                                             </button>
                                         </div>
-                                        <h3 className={`text-xl font-bold ${isSelected ? 'text-indigo-900' : 'text-gray-700'}`}>{folder.name}</h3>
-                                        <p className={`text-sm ${isSelected ? 'text-indigo-600/70' : 'text-gray-400'}`}>
-                                            {subtreeWordCount(folder.id)} words · {childFolderCount(folder.id)} subfolders
-                                        </p>
-                                    </div>
-                                )
-                            })}
-                            {directChildren.length === 0 && currentFolderId && (
-                                <div className="col-span-full bg-white border border-gray-100 rounded-3xl p-8 text-center text-gray-400 font-bold">
-                                    No subfolders here. Select this folder from the checkbox above or go back.
-                                </div>
-                            )}
+                                         <h3 className={`text-xl font-bold ${isSelected ? 'text-indigo-900' : 'text-gray-700'}`}>{folder.name}</h3>
+                                         <p className={`text-sm ${isSelected ? 'text-indigo-600/70' : 'text-gray-400'}`}>
+                                             {isLeaf ? `${wordCount} words` : `${wordCount} words · ${subfolderCount} subfolders`}
+                                         </p>
+                                     </div>
+                                 )
+                             })}
+                             {directChildren.length === 0 && currentFolderIsLeaf && (
+                                 <div className="col-span-full bg-white border border-gray-100 rounded-3xl p-8 text-center">
+                                     <h3 className="text-xl font-bold text-gray-700">{currentFolder.name}</h3>
+                                     <p className="mt-2 text-gray-400 font-bold">This folder contains {currentScopeWordCount} words.</p>
+                                     <button onClick={() => toggleFolder(currentFolder.id)} className="mt-5 px-5 py-3 rounded-xl bg-indigo-600 text-white font-bold hover:bg-indigo-700 transition-colors">
+                                         {selectedInScope ? "Deselect This Folder" : "Select This Folder"}
+                                     </button>
+                                 </div>
+                             )}
                             {!folders.length && fallbackCategories.map(cat => {
                                 const isSelected = selectedFolderIds.has(cat);
                                 return (
