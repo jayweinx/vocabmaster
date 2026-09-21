@@ -3558,7 +3558,7 @@ const normalizeAnswer = (text) => String(text || '')
             };
 
             return (
-                <div className="h-full flex flex-col p-6 max-w-4xl mx-auto w-full overflow-hidden relative">
+                <div className="h-full flex flex-col p-6 max-w-4xl mx-auto w-full overflow-y-auto custom-scrollbar relative">
                     {showBatchDeleteConfirm && (
                         <div className="absolute inset-0 z-[60] bg-white/95 backdrop-blur-sm flex flex-col items-center justify-center p-8 animate-in fade-in rounded-2xl">
                             <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mb-4">
@@ -3738,7 +3738,7 @@ const normalizeAnswer = (text) => String(text || '')
                      )}
 
                      {!search && childFolders.length > 0 && (
-                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4 shrink-0 max-h-64 overflow-y-auto custom-scrollbar pr-1">
+                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
                              {childFolders.map(folder => {
                                  const totalWords = subtreeWordCount(folder.id);
                                  const subfolders = childFolderCount(folder.id);
@@ -3800,7 +3800,7 @@ const normalizeAnswer = (text) => String(text || '')
                         )}
                     </div>
                     
-                    <div className="flex-1 overflow-y-auto custom-scrollbar space-y-2 pb-safe min-h-0">
+                    <div className="space-y-2 pb-safe">
                         {filtered.length === 0 ? (
                             <div className="text-center text-gray-400 py-10 font-bold">No words found.</div>
                         ) : (
