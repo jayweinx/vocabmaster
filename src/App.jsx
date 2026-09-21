@@ -850,8 +850,8 @@ const normalizeAnswer = (text) => String(text || '')
             }, [words]);
 
             return (
-                <div className="flex flex-col h-full bg-gray-50 overflow-hidden">
-                    <div className="p-6 pb-2 shrink-0">
+                <div className="flex flex-col min-h-full bg-gray-50 md:h-full md:overflow-hidden">
+                    <div className="p-4 pb-2 md:p-6 md:pb-2 md:shrink-0">
                         <h2 className="text-3xl font-black text-gray-800 mb-2">{title}</h2>
                         <p className="text-gray-500 font-medium">Select one or more folders to practice</p>
                         <div className="flex flex-wrap items-center gap-2 mt-4 text-sm font-bold">
@@ -865,7 +865,7 @@ const normalizeAnswer = (text) => String(text || '')
                         </div>
                     </div>
                     
-                    <div className="px-6 py-2 flex flex-wrap items-center justify-between gap-3 shrink-0">
+                    <div className="px-4 py-2 md:px-6 flex flex-wrap items-center justify-between gap-3 md:shrink-0">
                          <div className="flex flex-wrap items-center gap-3">
                          {currentFolderId && (
                             <button onClick={() => setCurrentFolderId(folders.find(folder => folder.id === currentFolderId)?.parentId || null)} className="flex items-center gap-2 px-3 py-2 rounded-xl bg-white border border-gray-100 text-gray-600 font-bold hover:text-indigo-600 hover:bg-indigo-50 transition-colors">
@@ -880,7 +880,7 @@ const normalizeAnswer = (text) => String(text || '')
                         <span className="text-sm font-bold text-gray-400">{selectedFolderIds.size} folders selected · {selectedWords.length} words</span>
                     </div>
 
-                    <div className="flex-1 overflow-y-auto p-6 custom-scrollbar pb-safe">
+                    <div className="p-4 md:p-6 md:flex-1 md:overflow-y-auto custom-scrollbar">
                         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                             {directChildren.map(folder => {
                                 const selectionState = getSelectionState(folder.id);
@@ -921,7 +921,7 @@ const normalizeAnswer = (text) => String(text || '')
                             })}
                         </div>
                     </div>
-                    <div className="p-4 md:p-6 bg-white border-t border-gray-100 shrink-0">
+                    <div className="p-4 pb-safe md:p-6 bg-white border-t border-gray-100 md:shrink-0">
                         <button onClick={() => onSelect(Array.from(selectedFolderIds))} disabled={selectedWords.length === 0} className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold shadow-lg hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all text-lg flex items-center justify-center gap-2">
                             Continue <ChevronRight size={24} />
                         </button>
