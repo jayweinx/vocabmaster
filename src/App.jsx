@@ -1776,7 +1776,92 @@ const normalizeAnswer = (text) => String(text || '')
           );
         }
 
-        function AdventureMode({ words, folders, setIsDirty, username }) {
+        function GameHubMode({ words, folders, setIsDirty, username, hubRequestVersion }) {
+          const [selectedGame, setSelectedGame] = useState('hub');
+
+          useEffect(() => {
+            setSelectedGame('hub');
+            if (setIsDirty) setIsDirty(false);
+          }, [hubRequestVersion, setIsDirty]);
+
+          const returnToHub = () => {
+            setSelectedGame('hub');
+            if (setIsDirty) setIsDirty(false);
+          };
+
+          if (selectedGame === 'adventure') {
+            return <AdventureMode words={words} folders={folders} setIsDirty={setIsDirty} username={username} onBackToGames={returnToHub} />;
+          }
+
+          const games = [
+            {
+              id: 'adventure',
+              icon: '🧑‍🚀',
+              title: 'Vocab Adventure',
+              description: 'Explore the world, answer vocabulary challenges and defeat the boss.',
+              status: 'Available',
+              actionLabel: 'Play',
+              available: true
+            },
+            {
+              id: 'maze',
+              icon: '🕸️',
+              title: 'Vocab Maze',
+              description: 'Choose routes, escape the ghost, collect items and clear every vocabulary challenge.',
+              status: 'Coming Soon',
+              actionLabel: 'Coming Soon',
+              available: false
+            },
+            {
+              id: 'arena',
+              icon: '⚔️',
+              title: 'Arena Battle',
+              description: 'Team vs Team classroom vocabulary competition.',
+              status: 'Coming Soon',
+              actionLabel: 'Coming Soon',
+              available: false
+            }
+          ];
+
+          return (
+            <section className="min-h-full bg-gray-50 p-5 sm:p-6 lg:p-8 pb-safe">
+              <div className="mx-auto max-w-6xl">
+                <div className="mb-7 rounded-3xl border border-indigo-100 bg-white p-6 shadow-sm sm:p-8">
+                  <div className="flex items-start gap-4">
+                    <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-indigo-100 text-3xl" aria-hidden="true">🎮</div>
+                    <div>
+                      <h2 className="text-3xl font-black text-gray-800 sm:text-4xl">Vocab Games</h2>
+                      <p className="mt-2 max-w-2xl font-medium leading-relaxed text-gray-500">Choose a game and practise your vocabulary in a different way.</p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-3">
+                  {games.map(game => (
+                    <article key={game.id} className={`flex min-h-[300px] flex-col rounded-3xl border bg-white p-6 shadow-sm transition-all ${game.available ? 'border-indigo-100 hover:-translate-y-1 hover:border-indigo-300 hover:shadow-md' : 'border-gray-100'}`}>
+                      <div className="flex items-start justify-between gap-4">
+                        <span className="text-5xl leading-none" aria-hidden="true">{game.icon}</span>
+                        <span className={`rounded-full px-3 py-1 text-xs font-black uppercase tracking-wide ${game.available ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>{game.status}</span>
+                      </div>
+                      <h3 className="mt-6 text-2xl font-black text-gray-800">{game.title}</h3>
+                      <p className="mt-3 flex-1 leading-relaxed text-gray-500">{game.description}</p>
+                      <button
+                        type="button"
+                        onClick={game.available ? () => setSelectedGame(game.id) : undefined}
+                        disabled={!game.available}
+                        className={`mt-6 min-h-12 w-full rounded-xl px-4 py-3 font-black uppercase tracking-wide transition-colors ${game.available ? 'bg-indigo-600 text-white shadow-sm hover:bg-indigo-700 focus:outline-none focus:ring-4 focus:ring-indigo-200' : 'cursor-not-allowed bg-gray-100 text-gray-400'}`}
+                      >
+                        {game.actionLabel}
+                      </button>
+                    </article>
+                  ))}
+                </div>
+              </div>
+            </section>
+          );
+        }
+
+        function AdventureMode({ words, folders, setIsDirty, username, onBackToGames }) {
           const [phase, setPhase] = useState('map');
           const [currentFolderId, setCurrentFolderId] = useState(null);
           const [selectedSession, setSelectedSession] = useState(null);
@@ -1809,6 +1894,9 @@ const normalizeAnswer = (text) => String(text || '')
 
           useEffect(() => {
             if (setIsDirty) setIsDirty(phase === 'playing');
+            return () => {
+              if (setIsDirty) setIsDirty(false);
+            };
           }, [phase, setIsDirty]);
 
           useEffect(() => {
@@ -2205,6 +2293,7 @@ const normalizeAnswer = (text) => String(text || '')
                   <Zap size={48} className="mx-auto text-indigo-500 mb-4" />
                   <h2 className="text-3xl font-black text-gray-800 mb-2">Vocab Adventure</h2>
                   <p className="text-gray-500 font-bold">Add vocabulary first, then return here to explore a stage.</p>
+                  {onBackToGames && <button type="button" onClick={onBackToGames} className="mt-5 rounded-xl bg-indigo-600 px-5 py-3 font-black text-white shadow-sm hover:bg-indigo-700">← Back to Games</button>}
                 </div>
               </div>
             );
@@ -2243,6 +2332,7 @@ const normalizeAnswer = (text) => String(text || '')
                     {reviewWords.length > 0 && <button onClick={() => startSession({ ...selectedSession, words: reviewWords, title: 'Difficult Words Review', chunkIndex: selectedSession?.chunkIndex || 0 })} className="px-5 py-3 rounded-xl bg-red-50 text-red-600 font-black border border-red-100 hover:bg-red-100">Review Difficult Words</button>}
                     <button onClick={restartStage} className="px-5 py-3 rounded-xl bg-indigo-50 text-indigo-600 font-black border border-indigo-100 hover:bg-indigo-100">Restart Stage</button>
                     <button onClick={exitAdventure} className="px-5 py-3 rounded-xl bg-indigo-600 text-white font-black shadow-lg hover:bg-indigo-700">Back to Map</button>
+                    {onBackToGames && <button type="button" onClick={onBackToGames} className="px-5 py-3 rounded-xl bg-gray-100 text-gray-600 font-black hover:bg-gray-200">← Back to Games</button>}
                   </div>
                 </div>
               </div>
@@ -2316,6 +2406,7 @@ const normalizeAnswer = (text) => String(text || '')
                         <button onClick={() => setPauseMenu(false)} className="w-full py-3 rounded-xl bg-indigo-600 text-white font-black">Resume</button>
                         <button onClick={restartStage} className="w-full py-3 rounded-xl bg-indigo-50 text-indigo-600 font-black border border-indigo-100">Restart Stage</button>
                         <button onClick={exitAdventure} className="w-full py-3 rounded-xl bg-gray-100 text-gray-600 font-black">Exit Adventure</button>
+                        {onBackToGames && <button type="button" onClick={onBackToGames} className="w-full py-3 rounded-xl bg-gray-100 text-gray-600 font-black">← Back to Games</button>}
                       </div>
                     </div>
                   </div>
@@ -2394,9 +2485,10 @@ const normalizeAnswer = (text) => String(text || '')
               <div className="p-6 bg-white border-b border-gray-100 shrink-0">
                 <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
                   <div>
-                    <div className="flex items-center gap-3">
+                    <div className="flex flex-wrap items-center gap-3">
                       <h2 className="text-3xl font-black text-gray-800">Vocab Adventure</h2>
                       <span className="px-2 py-1 bg-emerald-100 text-emerald-700 rounded-full text-xs font-black">NEW</span>
+                      {onBackToGames && <button type="button" onClick={onBackToGames} className="rounded-xl bg-gray-100 px-3 py-2 text-sm font-black text-gray-600 hover:bg-indigo-50 hover:text-indigo-600">← Back to Games</button>}
                     </div>
                     <p className="text-gray-500 font-bold mt-1">Choose an Adventure from your existing folder tree.</p>
                   </div>
@@ -4199,6 +4291,7 @@ const normalizeAnswer = (text) => String(text || '')
           const [showNameEditor, setShowNameEditor] = useState(false);
           const [draftUsername, setDraftUsername] = useState(username);
           const [activeTab, setActiveTab] = useState('study');
+          const [gameHubRequestVersion, setGameHubRequestVersion] = useState(0);
           const [pendingTab, setPendingTab] = useState(null);
           const [isCurrentTabDirty, setIsCurrentTabDirty] = useState(false);
           const [words, setWordsState] = useState(initialLibraryRef.current.words);
@@ -4431,6 +4524,10 @@ const normalizeAnswer = (text) => String(text || '')
           const NavButton = ({ id, icon: Icon, label }) => (
             <button
               onClick={() => {
+                  if (id === 'adventure' && activeTab === 'adventure') {
+                      setGameHubRequestVersion(value => value + 1);
+                      return;
+                  }
                   if (activeTab !== id) {
                       if (isCurrentTabDirty) {
                           setPendingTab(id);
@@ -4461,7 +4558,7 @@ const normalizeAnswer = (text) => String(text || '')
                   <NavButton id="study" icon={BookOpen} label="Flashcards" />
                   <NavButton id="quiz" icon={Brain} label="Quiz" />
                   <NavButton id="spelling" icon={Keyboard} label="Spelling Practice" />
-                  <NavButton id="adventure" icon={Zap} label="Adventure NEW" />
+                  <NavButton id="adventure" icon={Zap} label="Games" />
                   {isTeacher && <><div className="h-px bg-gray-100 my-4"></div><NavButton id="add" icon={Plus} label="Teacher Input" /><NavButton id="list" icon={List} label="Manage Words" /></>}
                 </div>
               </aside>
@@ -4487,7 +4584,7 @@ const normalizeAnswer = (text) => String(text || '')
                       {activeTab === 'study' && <StudyMode words={words} folders={folders} initialFolderId={sharedFolderParam} />}
                       {activeTab === 'quiz' && <QuizMode words={words} folders={folders} setIsDirty={setIsCurrentTabDirty} username={username} />}
                       {activeTab === 'spelling' && <SpellingMode words={words} folders={folders} setIsDirty={setIsCurrentTabDirty} username={username} />}
-                      {activeTab === 'adventure' && <AdventureMode words={words} folders={folders} setIsDirty={setIsCurrentTabDirty} username={username} />}
+                      {activeTab === 'adventure' && <GameHubMode words={words} folders={folders} setIsDirty={setIsCurrentTabDirty} username={username} hubRequestVersion={gameHubRequestVersion} />}
                       {isTeacher && activeTab === 'add' && <AddMode words={words} setWords={setWords} folders={folders} setFolders={setFolders} setActiveTab={setActiveTab} />}
                       {isTeacher && activeTab === 'list' && <ListMode words={words} setWords={setWords} folders={folders} setFolders={setFolders} />}
                     </>}
