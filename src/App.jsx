@@ -3246,6 +3246,9 @@ const normalizeAnswer = (text) => String(text || '')
             const [activeFolderMenuId, setActiveFolderMenuId] = useState(null);
             const [folderDialog, setFolderDialog] = useState(null);
             const [folderDraft, setFolderDraft] = useState({ name: '', parentId: '' });
+            const [folderValidation, setFolderValidation] = useState('');
+            const [folderFeedback, setFolderFeedback] = useState('');
+            const folderFeedbackTimerRef = useRef(null);
             const [editingId, setEditingId] = useState(null);
             const [editDraft, setEditDraft] = useState({
                 word: '',
@@ -3256,6 +3259,16 @@ const normalizeAnswer = (text) => String(text || '')
             });
             const [shareFeedback, setShareFeedback] = useState('');
             const fileInputRef = useRef(null);
+
+            useEffect(() => () => {
+                if (folderFeedbackTimerRef.current) window.clearTimeout(folderFeedbackTimerRef.current);
+            }, []);
+
+            const showFolderFeedback = (message) => {
+                setFolderFeedback(message);
+                if (folderFeedbackTimerRef.current) window.clearTimeout(folderFeedbackTimerRef.current);
+                folderFeedbackTimerRef.current = window.setTimeout(() => setFolderFeedback(''), 2200);
+            };
 
             const copyShareLink = async (folderId) => {
                 const shareUrl = new URL(window.location.href);
@@ -3572,7 +3585,15 @@ const normalizeAnswer = (text) => String(text || '')
 
             const openRenameFolder = (folder) => {
                 setFolderDraft({ name: folder.name || '', parentId: folder.parentId || '' });
+                setFolderValidation('');
                 setFolderDialog({ type: 'rename', folderId: folder.id });
+                setActiveFolderMenuId(null);
+            };
+
+            const openCreateFolder = () => {
+                setFolderDraft({ name: '', parentId: currentFolderId || '' });
+                setFolderValidation('');
+                setFolderDialog({ type: 'create' });
                 setActiveFolderMenuId(null);
             };
 
@@ -3602,6 +3623,7 @@ const normalizeAnswer = (text) => String(text || '')
             const closeFolderDialog = () => {
                 setFolderDialog(null);
                 setFolderDraft({ name: '', parentId: '' });
+                setFolderValidation('');
             };
 
             const getTopLevelFolderIds = (ids = []) => {
@@ -3640,6 +3662,49 @@ const normalizeAnswer = (text) => String(text || '')
                 setFolders(nextFolders);
                 setWords(current => recategorizeWords(current, nextFolders, affectedIds));
                 closeFolderDialog();
+            };
+
+            const handleCreateFolder = (event) => {
+                event?.preventDefault();
+                const name = folderDraft.name.trim().replace(/\s+/g, ' ');
+                const requestedParentId = folderDraft.parentId || null;
+                const parentFolder = requestedParentId
+                    ? folders.find(folder => String(folder.id) === String(requestedParentId))
+                    : null;
+                const parentId = parentFolder?.id || null;
+                if (!name) {
+                    setFolderValidation('Enter a folder name.');
+                    return;
+                }
+                if (requestedParentId && !parentFolder) {
+                    setFolderValidation('The selected destination no longer exists. Choose another folder.');
+                    return;
+                }
+                const normalizedName = name.toLocaleLowerCase();
+                const duplicate = folders.some(folder => (
+                    String(folder.parentId || '') === String(parentId || '')
+                    && String(folder.name || '').trim().replace(/\s+/g, ' ').toLocaleLowerCase() === normalizedName
+                ));
+                if (duplicate) {
+                    setFolderValidation('A folder with this name already exists here.');
+                    return;
+                }
+                const siblings = folders.filter(folder => (folder.parentId || null) === parentId);
+                const nextOrder = siblings.reduce((highest, folder) => {
+                    const order = Number(folder.order);
+                    return Number.isFinite(order) ? Math.max(highest, order) : highest;
+                }, -1) + 1;
+                const timestamp = new Date().toISOString();
+                setFolders([...folders, {
+                    id: makeId('folder'),
+                    name,
+                    parentId,
+                    order: nextOrder,
+                    createdAt: timestamp,
+                    updatedAt: timestamp
+                }]);
+                closeFolderDialog();
+                showFolderFeedback('Folder created.');
             };
 
             const handleMoveFolders = () => {
@@ -3715,6 +3780,11 @@ const normalizeAnswer = (text) => String(text || '')
 
             return (
                 <div className="h-full flex flex-col p-6 max-w-4xl mx-auto w-full overflow-y-auto custom-scrollbar relative">
+                    {folderFeedback && (
+                        <div role="status" className="sticky top-0 z-[80] self-end mb-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-black text-emerald-700 shadow-lg">
+                            {folderFeedback}
+                        </div>
+                    )}
                     {showBatchDeleteConfirm && (
                         <div className="absolute inset-0 z-[60] bg-white/95 backdrop-blur-sm flex flex-col items-center justify-center p-8 animate-in fade-in rounded-2xl">
                             <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mb-4">
@@ -3745,6 +3815,40 @@ const normalizeAnswer = (text) => String(text || '')
                                     <button onClick={handleRenameFolder} disabled={!folderDraft.name.trim()} className="flex-1 py-3 rounded-xl bg-indigo-600 text-white font-bold shadow-lg hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">Rename Folder</button>
                                 </div>
                             </div>
+                        </div>
+                    )}
+                    {folderDialog?.type === 'create' && (
+                        <div className="absolute inset-0 z-[70] bg-white/95 backdrop-blur-sm flex flex-col items-center justify-center p-4 sm:p-8 animate-in fade-in rounded-2xl">
+                            <form onSubmit={handleCreateFolder} className="w-full max-w-md bg-white border border-indigo-100 rounded-2xl shadow-xl p-5">
+                                <div className="flex items-center gap-3 mb-5">
+                                    <div className="w-11 h-11 rounded-xl bg-indigo-100 text-indigo-600 flex items-center justify-center"><Folder size={23} /></div>
+                                    <h3 className="text-2xl font-black text-gray-800">Create New Folder</h3>
+                                </div>
+                                <label className="block text-xs font-bold text-gray-400 uppercase tracking-widest mb-1" htmlFor="new-folder-name">Folder Name</label>
+                                <input
+                                    id="new-folder-name"
+                                    value={folderDraft.name}
+                                    onChange={(e) => { setFolderDraft(current => ({ ...current, name: e.target.value })); setFolderValidation(''); }}
+                                    className="w-full p-4 bg-gray-50 rounded-xl border-2 border-transparent focus:border-indigo-500 outline-none font-bold text-gray-800 mb-4"
+                                    placeholder="Folder name"
+                                    autoFocus
+                                />
+                                <label className="block text-xs font-bold text-gray-400 uppercase tracking-widest mb-1" htmlFor="new-folder-parent">Create inside</label>
+                                <select
+                                    id="new-folder-parent"
+                                    value={folderDraft.parentId}
+                                    onChange={(e) => { setFolderDraft(current => ({ ...current, parentId: e.target.value })); setFolderValidation(''); }}
+                                    className="w-full p-4 bg-gray-50 rounded-xl border-2 border-transparent focus:border-indigo-500 outline-none font-bold text-gray-800 mb-3"
+                                >
+                                    <option value="">All Folders (root)</option>
+                                    {folderMoveOptions.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}
+                                </select>
+                                {folderValidation && <p role="alert" className="text-sm text-red-600 font-bold mb-3">{folderValidation}</p>}
+                                <div className="flex gap-3 mt-5">
+                                    <button type="button" onClick={closeFolderDialog} className="flex-1 py-3 rounded-xl border-2 border-gray-200 bg-white text-gray-600 font-bold hover:bg-gray-50 transition-colors">Cancel</button>
+                                    <button type="submit" className="flex-1 py-3 rounded-xl bg-indigo-600 text-white font-bold shadow-lg hover:bg-indigo-700 transition-colors">Create Folder</button>
+                                </div>
+                            </form>
                         </div>
                     )}
                     {folderDialog?.type === 'move' && (
@@ -3826,6 +3930,9 @@ const normalizeAnswer = (text) => String(text || '')
                         <h2 className="text-3xl font-black text-gray-800">Vocabulary List</h2>
                         <div className="flex gap-2 w-full sm:w-auto flex-wrap">
                             <input type="file" accept=".json" ref={fileInputRef} onChange={handleFileChange} className="hidden" />
+                            <button onClick={openCreateFolder} className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-4 py-2 bg-indigo-600 border-2 border-indigo-600 text-white rounded-xl font-bold shadow-sm hover:bg-indigo-700 hover:border-indigo-700 transition-colors">
+                                <Plus size={20} /> New Folder
+                            </button>
                             <button onClick={() => { setManageFoldersMode(value => !value); setSelectedFolderIds(new Set()); setActiveFolderMenuId(null); }} className={`flex-1 sm:flex-none flex items-center justify-center gap-2 px-4 py-2 rounded-xl font-bold transition-colors border-2 ${manageFoldersMode ? 'bg-indigo-600 border-indigo-600 text-white' : 'bg-white border-gray-100 text-gray-600 hover:bg-indigo-50 hover:text-indigo-600'}`}>
                                 {manageFoldersMode ? <CheckSquare size={20} /> : <Folder size={20} />} Manage Folders
                             </button>
