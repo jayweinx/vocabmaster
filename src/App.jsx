@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import { BookOpen, Brain, List, Plus, ChevronRight, ChevronLeft, RotateCw, Check, X, Trash2, Edit2, Save, Languages, Award, Keyboard, Volume2, CheckCircle, History, AlertCircle, Clock, EyeOff, AlertTriangle, Square, CheckSquare, Zap, Delete, Folder, Download, Upload, Info, Search, Cloud, CloudOff, LogIn, LogOut, Copy } from 'lucide-react';
 import TeacherLogin from './components/TeacherLogin';
 import { isSupabaseConfigured } from './lib/supabase';
+import { analyseDocxFile } from './services/docxImportService';
 import { getCurrentSession, isAllowlistedTeacher, loadCloudLibrary, onAuthChange, signOutTeacher, syncCloudLibrary, validateLibrary } from './services/vocabularyService';
 
 const normalizeAnswer = (text) => String(text || '')
@@ -289,15 +290,15 @@ const normalizeAnswer = (text) => String(text || '')
         const evaluateImportStatus = (item, existingWords = [], duplicateAction = 'skip') => {
             if (item.ignored) return { status: 'Ignored', tone: 'gray', message: 'Ignored' };
             if (!cleanCellText(item.word)) return { status: 'Error', tone: 'red', message: 'Missing word' };
-            if (!/^[A-Za-z][A-Za-z0-9\s'\-]+$/.test(cleanCellText(item.word))) return { status: 'Error', tone: 'red', message: 'Check word' };
             const duplicate = existingWords.find(word => makeImportKey(word.word, word.category) === makeImportKey(item.word, item.category));
             if (duplicate) return { status: 'Duplicate', tone: 'amber', message: duplicateAction === 'skip' ? 'Will skip existing' : duplicateAction === 'update' ? 'Will update existing' : 'Will keep both' };
-            const warnings = [];
+            const warnings = [...(item.validationWarnings || [])];
             if (existingWords.some(word => normalizeWordKey(word.word) === normalizeWordKey(item.word))) warnings.push('Existing elsewhere');
             if (!cleanCellText(item.meaning)) warnings.push('Missing meaning');
             if (!cleanCellText(item.mandarin)) warnings.push('Missing Mandarin');
-            if (!cleanCellText(item.pronunciation)) warnings.push('No pronunciation');
-            if (warnings.length) return { status: 'Warning', tone: 'yellow', message: warnings.join(', ') };
+            if (cleanCellText(item.word).length > 600 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(item.word)) warnings.push('Check malformed word');
+            const uniqueWarnings = [...new Set(warnings)];
+            if (uniqueWarnings.length) return { status: 'Warning', tone: 'yellow', message: uniqueWarnings.join(', ') };
             return { status: 'Ready', tone: 'emerald', message: 'Ready' };
         };
 
@@ -2484,7 +2485,12 @@ const normalizeAnswer = (text) => String(text || '')
             const [importResult, setImportResult] = useState(null);
             const [previewTab, setPreviewTab] = useState('structure');
             const [collapsedFolderIds, setCollapsedFolderIds] = useState(new Set());
-            const fileInputRef = useRef(null);
+            const [docxFile, setDocxFile] = useState(null);
+            const [docxDestinationId, setDocxDestinationId] = useState('');
+            const [docxState, setDocxState] = useState({ status: 'idle', message: '' });
+            const [isDocxDragging, setIsDocxDragging] = useState(false);
+            const docxFileInputRef = useRef(null);
+            const jsonFileInputRef = useRef(null);
 
             const previewStatuses = useMemo(() => preview.map(item => ({
                 id: item.id,
@@ -2513,6 +2519,20 @@ const normalizeAnswer = (text) => String(text || '')
                 preview.forEach(item => { if (item.category) cats.add(item.category); });
                 return Array.from(cats).sort();
             }, [words, preview]);
+
+            const topLevelFolders = useMemo(() => folders
+                .filter(folder => !folder.parentId)
+                .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''))), [folders]);
+
+            useEffect(() => {
+                if (!topLevelFolders.length) {
+                    setDocxDestinationId('');
+                    return;
+                }
+                if (!topLevelFolders.some(folder => String(folder.id) === String(docxDestinationId))) {
+                    setDocxDestinationId(String(topLevelFolders[0].id));
+                }
+            }, [topLevelFolders, docxDestinationId]);
 
             const folderOptions = useMemo(() => flattenFolderOptions(proposedFolders), [proposedFolders]);
             const proposedById = useMemo(() => new Map(proposedFolders.map(folder => [folder.id, folder])), [proposedFolders]);
@@ -2556,6 +2576,57 @@ const normalizeAnswer = (text) => String(text || '')
                 setPreviewTab('structure');
             };
 
+            const chooseDocxFile = (file) => {
+                if (!file) return;
+                if (!/\.docx$/i.test(file.name || '')) {
+                    setDocxFile(null);
+                    setDocxState({ status: 'error', message: 'Please upload a .docx file.' });
+                    return;
+                }
+                setDocxFile(file);
+                setDocxState({ status: 'selected', message: `${file.name} is ready to analyse.` });
+                setImportResult(null);
+            };
+
+            const handleDocxFileChange = (event) => {
+                chooseDocxFile(event.target.files?.[0]);
+                event.target.value = '';
+            };
+
+            const handleDocxDrop = (event) => {
+                event.preventDefault();
+                setIsDocxDragging(false);
+                chooseDocxFile(event.dataTransfer.files?.[0]);
+            };
+
+            const handleDocxAnalysis = async () => {
+                if (!docxFile) {
+                    setDocxState({ status: 'error', message: 'Choose a DOCX file first.' });
+                    return;
+                }
+                const destinationFolder = topLevelFolders.find(folder => String(folder.id) === String(docxDestinationId)) || null;
+                if (topLevelFolders.length && !destinationFolder) {
+                    setDocxState({ status: 'error', message: 'Choose a destination folder first.' });
+                    return;
+                }
+                setDocxState({ status: 'loading', message: 'Analysing the document in your browser…' });
+                try {
+                    const parsed = await analyseDocxFile(docxFile, { destinationFolder, existingFolders: folders });
+                    setAnalysis(parsed);
+                    setPreview(parsed.items);
+                    setProposedFolders(parsed.folders);
+                    setSelectedPreviewIds(new Set());
+                    setImportResult(null);
+                    setPreviewTab('structure');
+                    setDocxState({ status: 'ready', message: `${parsed.sections.length} sections and ${parsed.items.length} vocabulary entries detected.` });
+                } catch (error) {
+                    setAnalysis(null);
+                    setPreview([]);
+                    setProposedFolders([]);
+                    setDocxState({ status: 'error', message: error.message || 'The DOCX could not be analysed.' });
+                }
+            };
+
             const handleJsonFileChange = (e) => {
                 const file = e.target.files[0];
                 if (!file) return;
@@ -2566,7 +2637,7 @@ const normalizeAnswer = (text) => String(text || '')
                         if (!Array.isArray(parsed)) throw new Error('Backup file must be an array.');
                         const draftFolders = [];
                         const folderByPath = new Map();
-                        const ensureDraftFolder = (pathText) => {
+                        const ensureDraftFolder = (pathText, lineNumber) => {
                             const names = cleanCellText(pathText || category || 'General').split('›').map(cleanCellText).filter(Boolean);
                             let parentId = null;
                             let folder = null;
@@ -2574,7 +2645,7 @@ const normalizeAnswer = (text) => String(text || '')
                                 const pathKey = makeFolderPathKey(names.slice(0, depth + 1));
                                 folder = folderByPath.get(pathKey);
                                 if (!folder) {
-                                    folder = { id: makeId('json-folder'), name, parentId, type: depth === 0 ? 'DOCUMENT_TITLE' : 'SECTION', rawHeading: name, sourcePage: null, lineNumber: index + 1, needsReview: false, existingFolderId: null, ignored: false };
+                                    folder = { id: makeId('json-folder'), name, parentId, type: depth === 0 ? 'DOCUMENT_TITLE' : 'SECTION', rawHeading: name, sourcePage: null, lineNumber, needsReview: false, existingFolderId: null, ignored: false };
                                     draftFolders.push(folder);
                                     folderByPath.set(pathKey, folder);
                                 }
@@ -2583,7 +2654,7 @@ const normalizeAnswer = (text) => String(text || '')
                             return folder;
                         };
                         const items = parsed.map((item, index) => {
-                            const folder = ensureDraftFolder(item.category || category || 'General');
+                            const folder = ensureDraftFolder(item.category || category || 'General', index + 1);
                             return ({
                             id: `json-preview-${index}-${Math.random().toString(36).slice(2)}`,
                             lineNumber: index + 1,
@@ -2879,7 +2950,7 @@ const normalizeAnswer = (text) => String(text || '')
             return (
                 <div className="h-full flex flex-col p-4 md:p-6 max-w-6xl mx-auto w-full overflow-y-auto custom-scrollbar">
                     <h2 className="text-3xl font-black text-gray-800 mb-2">Import Vocabulary</h2>
-                    <p className="text-sm text-gray-400 font-medium mb-6">Paste a structured vocabulary document, review the folder tree, then import.</p>
+                    <p className="text-sm text-gray-400 font-medium mb-6">Upload a DOCX, use Smart Paste, or restore JSON. Every method shows a preview before import.</p>
 
                     {importResult && (
                         <div className="bg-emerald-50 border-2 border-emerald-100 rounded-3xl p-5 mb-6">
@@ -2891,6 +2962,54 @@ const normalizeAnswer = (text) => String(text || '')
                             </div>
                         </div>
                     )}
+
+                    <div className="bg-white p-5 md:p-6 rounded-3xl shadow-sm border border-cyan-100 mb-5">
+                        <div className="flex items-center gap-3 mb-5">
+                            <div className="w-11 h-11 bg-cyan-100 text-cyan-700 rounded-2xl flex items-center justify-center"><Upload size={22} /></div>
+                            <div>
+                                <h3 className="text-xl font-black text-gray-800">Upload DOCX</h3>
+                                <p className="text-xs text-gray-400 font-bold">The Word file stays in this browser and is never sent to another service</p>
+                            </div>
+                        </div>
+                        <div className="grid grid-cols-1 lg:grid-cols-[0.8fr_1.2fr] gap-4">
+                            <div>
+                                <label className="block text-sm font-bold text-gray-400 uppercase tracking-widest mb-2">Destination</label>
+                                <select
+                                    value={docxDestinationId}
+                                    onChange={event => setDocxDestinationId(event.target.value)}
+                                    className="w-full p-4 bg-gray-50 rounded-2xl border-2 border-transparent focus:border-cyan-500 outline-none font-bold"
+                                >
+                                    {!topLevelFolders.length && <option value="">Top level (no folders exist yet)</option>}
+                                    {topLevelFolders.map(folder => <option key={folder.id} value={String(folder.id)}>{folder.name}</option>)}
+                                </select>
+                                <p className="mt-2 text-xs text-gray-400">The document and its section folders will be created or reused inside this top-level folder.</p>
+                            </div>
+                            <div>
+                                <input ref={docxFileInputRef} type="file" accept=".docx" onChange={handleDocxFileChange} className="hidden" />
+                                <div
+                                    onDragEnter={event => { event.preventDefault(); setIsDocxDragging(true); }}
+                                    onDragOver={event => { event.preventDefault(); setIsDocxDragging(true); }}
+                                    onDragLeave={() => setIsDocxDragging(false)}
+                                    onDrop={handleDocxDrop}
+                                    className={`rounded-2xl border-2 border-dashed p-5 text-center transition-colors ${isDocxDragging ? 'border-cyan-500 bg-cyan-50' : 'border-cyan-200 bg-cyan-50/40'}`}
+                                >
+                                    <p className="font-black text-gray-700 break-words">{docxFile ? docxFile.name : 'Drop DOCX here'}</p>
+                                    <p className="my-2 text-xs font-bold uppercase tracking-widest text-gray-400">or</p>
+                                    <button type="button" onClick={() => docxFileInputRef.current?.click()} className="px-4 py-3 rounded-xl bg-white border-2 border-cyan-100 text-cyan-700 font-black hover:bg-cyan-50">Choose DOCX File</button>
+                                    <p className="mt-3 text-xs text-gray-400">Accepted: .docx · Maximum 20 MB</p>
+                                </div>
+                            </div>
+                        </div>
+                        {docxState.message && <p className={`mt-4 text-sm font-bold ${docxState.status === 'error' ? 'text-red-600' : docxState.status === 'ready' ? 'text-emerald-600' : 'text-cyan-700'}`}>{docxState.message}</p>}
+                        <button
+                            type="button"
+                            onClick={handleDocxAnalysis}
+                            disabled={!docxFile || docxState.status === 'loading'}
+                            className="mt-4 w-full py-4 bg-cyan-600 text-white rounded-2xl font-black shadow-lg hover:bg-cyan-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                        >
+                            {docxState.status === 'loading' ? 'Analysing Document…' : 'Analyse Document'}
+                        </button>
+                    </div>
 
                     <div className="grid grid-cols-1 lg:grid-cols-[1.1fr_0.9fr] gap-5 mb-6">
                         <div className="bg-white p-5 md:p-6 rounded-3xl shadow-sm border">
@@ -2922,8 +3041,8 @@ const normalizeAnswer = (text) => String(text || '')
                                 </div>
                             </div>
                             <p className="text-sm text-gray-500 mb-5">JSON backup import also checks duplicates before anything is written into your collection.</p>
-                            <input type="file" accept=".json" ref={fileInputRef} onChange={handleJsonFileChange} className="hidden" />
-                            <button onClick={() => fileInputRef.current.click()} className="w-full py-4 bg-white border-2 border-emerald-100 text-emerald-600 rounded-2xl font-bold hover:bg-emerald-50 transition-colors">
+                            <input type="file" accept=".json" ref={jsonFileInputRef} onChange={handleJsonFileChange} className="hidden" />
+                            <button onClick={() => jsonFileInputRef.current?.click()} className="w-full py-4 bg-white border-2 border-emerald-100 text-emerald-600 rounded-2xl font-bold hover:bg-emerald-50 transition-colors">
                                 Choose JSON File
                             </button>
                         </div>
@@ -2934,10 +3053,14 @@ const normalizeAnswer = (text) => String(text || '')
                             <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 mb-5">
                                 <div>
                                     <h3 className="text-2xl font-black text-indigo-950">{analysis.documentTitle || category}</h3>
-                                    <p className="text-sm text-indigo-700 font-medium">{analysis.totalLines} relevant lines processed, {preview.length} vocabulary items, {analysis.headings.length} headings recognised, {analysis.unrecognised.length} unknown lines.</p>
+                                    <p className="text-sm text-indigo-700 font-medium">
+                                        {analysis.source === 'docx'
+                                            ? `${analysis.sections?.length || 0} sections detected · ${preview.length} vocabulary entries detected`
+                                            : `${analysis.totalLines} relevant lines processed, ${preview.length} vocabulary items, ${analysis.headings.length} headings recognised, ${analysis.unrecognised.length} unknown lines.`}
+                                    </p>
                                 </div>
                                 <div className="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-8 gap-2 text-sm">
-                                    <div className="px-3 py-2 rounded-xl border font-black text-center bg-white text-indigo-700 border-indigo-100">{structureSummary.paperCount} Papers</div>
+                                    {analysis.source !== 'docx' && <div className="px-3 py-2 rounded-xl border font-black text-center bg-white text-indigo-700 border-indigo-100">{structureSummary.paperCount} Papers</div>}
                                     <div className="px-3 py-2 rounded-xl border font-black text-center bg-white text-indigo-700 border-indigo-100">{structureSummary.sectionCount} Sections</div>
                                     <div className="px-3 py-2 rounded-xl border font-black text-center bg-white text-indigo-700 border-indigo-100">{structureSummary.contentCount} Folders</div>
                                     {['Ready', 'Warning', 'Duplicate', 'Error', 'Ignored'].map(label => (
@@ -2947,6 +3070,28 @@ const normalizeAnswer = (text) => String(text || '')
                                     ))}
                                 </div>
                             </div>
+
+                            {analysis.source === 'docx' && analysis.sectionCounts?.length > 0 && (
+                                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2 mb-4">
+                                    {analysis.sectionCounts.map(section => (
+                                        <div key={section.name} className="flex items-center justify-between gap-3 rounded-xl border border-indigo-100 bg-white px-3 py-2 text-sm">
+                                            <span className="min-w-0 break-words font-bold text-gray-700">{section.name}</span>
+                                            <span className="shrink-0 font-black text-indigo-600">{section.count}</span>
+                                        </div>
+                                    ))}
+                                    <div className="flex items-center justify-between gap-3 rounded-xl bg-indigo-600 px-3 py-2 text-sm text-white">
+                                        <span className="font-black">TOTAL</span>
+                                        <span className="font-black">{preview.length}</span>
+                                    </div>
+                                </div>
+                            )}
+
+                            {analysis.source === 'docx' && ((analysis.warnings?.length || 0) > 0 || (analysis.errors?.length || 0) > 0) && (
+                                <div className="rounded-2xl border border-yellow-200 bg-yellow-50 p-4 mb-4 text-sm">
+                                    {(analysis.errors || []).map((message, index) => <p key={`error-${index}`} className="font-bold text-red-700">Error: {message}</p>)}
+                                    {(analysis.warnings || []).map((message, index) => <p key={`warning-${index}`} className="font-medium text-yellow-800">Warning: {message}</p>)}
+                                </div>
+                            )}
 
                             {summary.Duplicate > 0 && (
                                 <div className="bg-white border border-amber-100 rounded-2xl p-4 mb-4">
@@ -3013,11 +3158,11 @@ const normalizeAnswer = (text) => String(text || '')
                                         <tr>
                                             <th className="p-3 text-left">Select</th>
                                             <th className="p-3 text-left">Status</th>
-                                            <th className="p-3 text-left">Location</th>
-                                            <th className="p-3 text-left">Word</th>
+                                            <th className="p-3 text-left">Destination Folder</th>
+                                            <th className="p-3 text-left">Word / Phrase</th>
+                                            <th className="p-3 text-left">Chinese Meaning</th>
+                                            <th className="p-3 text-left">English Meaning</th>
                                             <th className="p-3 text-left">Pronunciation</th>
-                                            <th className="p-3 text-left">Meaning</th>
-                                            <th className="p-3 text-left">Mandarin</th>
                                             <th className="p-3 text-left">Part / Question</th>
                                         </tr>
                                     </thead>
@@ -3041,7 +3186,7 @@ const normalizeAnswer = (text) => String(text || '')
                                                             {folderOptions.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}
                                                         </select>
                                                     </td>
-                                                    {['word', 'pronunciation', 'meaning', 'mandarin'].map(field => (
+                                                    {['word', 'mandarin', 'meaning', 'pronunciation'].map(field => (
                                                         <td key={field} className="p-3 align-top">
                                                             <input value={item[field] || ''} onChange={e => updatePreviewItem(item.id, field, e.target.value)} className="w-full min-w-[140px] p-2 bg-gray-50 rounded-lg border-2 border-transparent focus:border-indigo-500 outline-none" />
                                                         </td>
@@ -3079,7 +3224,7 @@ const normalizeAnswer = (text) => String(text || '')
                                     disabled={importableCount === 0}
                                     className="px-6 py-4 bg-emerald-500 text-white rounded-2xl font-black shadow-lg hover:bg-emerald-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                                 >
-                                    Create Folders & Import {importableCount} Words
+                                    {analysis.source === 'docx' ? `Import ${importableCount} Entries` : `Create Folders & Import ${importableCount} Words`}
                                 </button>
                             </div>
                         </div>
