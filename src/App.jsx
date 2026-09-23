@@ -3,6 +3,7 @@ import { BookOpen, Brain, List, Plus, ChevronRight, ChevronLeft, RotateCw, Check
 import TeacherLogin from './components/TeacherLogin';
 import SentenceBuilderQuestion from './components/SentenceBuilderQuestion';
 import VocabMazeMode from './games/VocabMazeMode';
+import VocabQuestRPG from './games/VocabQuestRPG';
 import { assignQuizQuestionTypes, SENTENCE_BUILDER } from './quiz/sentenceBuilderHelpers';
 import { isSupabaseConfigured } from './lib/supabase';
 import { analyseDocxFile } from './services/docxImportService';
@@ -1840,8 +1841,8 @@ const normalizeAnswer = (text) => String(text || '')
             if (setIsDirty) setIsDirty(false);
           };
 
-          if (selectedGame === 'adventure') {
-            return <AdventureMode words={words} folders={folders} setIsDirty={setIsDirty} username={username} onBackToGames={returnToHub} />;
+          if (selectedGame === 'quest') {
+            return <VocabQuestRPG words={words} folders={folders} setIsDirty={setIsDirty} username={username} onBackToGames={returnToHub} CategorySelectionScreen={CategorySelectionScreen} WordSelectionScreen={WordSelectionScreen} />;
           }
 
           if (selectedGame === 'maze') {
@@ -1850,10 +1851,10 @@ const normalizeAnswer = (text) => String(text || '')
 
           const games = [
             {
-              id: 'adventure',
-              icon: '🧑‍🚀',
-              title: 'Vocab Adventure',
-              description: 'Explore the world, answer vocabulary challenges and defeat the boss.',
+              id: 'quest',
+              icon: '🗺️',
+              title: 'Vocab Quest RPG',
+              description: 'Explore the map, meet characters, complete vocabulary challenges and defeat the final boss.',
               status: 'Available',
               actionLabel: 'Play',
               available: true
