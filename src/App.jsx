@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { BookOpen, Brain, List, Plus, ChevronRight, ChevronLeft, RotateCw, Check, X, Trash2, Edit2, Save, Languages, Award, Keyboard, Volume2, CheckCircle, History, AlertCircle, Clock, EyeOff, AlertTriangle, Square, CheckSquare, Zap, Delete, Folder, Download, Upload, Info, Search, Cloud, CloudOff, LogIn, LogOut, Copy } from 'lucide-react';
 import TeacherLogin from './components/TeacherLogin';
+import SentenceBuilderQuestion from './components/SentenceBuilderQuestion';
 import VocabMazeMode from './games/VocabMazeMode';
+import { assignQuizQuestionTypes, SENTENCE_BUILDER } from './quiz/sentenceBuilderHelpers';
 import { isSupabaseConfigured } from './lib/supabase';
 import { analyseDocxFile } from './services/docxImportService';
 import { getCurrentSession, isAllowlistedTeacher, loadCloudLibrary, onAuthChange, signOutTeacher, syncCloudLibrary, validateLibrary } from './services/vocabularyService';
@@ -1238,6 +1240,27 @@ const normalizeAnswer = (text) => String(text || '')
           const [activeWords, setActiveWords] = useState([]); 
           const [showQuitConfirm, setShowQuitConfirm] = useState(false);
           const [questionTypes, setQuestionTypes] = useState([]);
+          const [sentenceFeedback, setSentenceFeedback] = useState(null);
+          const advanceTimer = useRef(null);
+
+          const cancelPendingAdvance = () => {
+            if (advanceTimer.current) clearTimeout(advanceTimer.current);
+            advanceTimer.current = null;
+          };
+
+          const resetQuizToCategory = () => {
+            cancelPendingAdvance();
+            setShowQuitConfirm(false);
+            setSelectedCategories([]);
+            setActiveWords([]);
+            setQuestionTypes([]);
+            setCurrentQ(0);
+            setScore(0);
+            setSelectedOption(null);
+            setIsCorrect(null);
+            setSentenceFeedback(null);
+            setPhase('category');
+          };
 
           useEffect(() => {
             if (setIsDirty) setIsDirty(phase === 'playing');
@@ -1250,6 +1273,8 @@ const normalizeAnswer = (text) => String(text || '')
             }
           }, [currentQ, phase, questionTypes, activeWords]);
 
+          useEffect(() => () => cancelPendingAdvance(), []);
+
           const options = useMemo(() => {
             if (activeWords.length === 0 || !activeWords[currentQ]) return [];
             const target = activeWords[currentQ];
@@ -1258,6 +1283,21 @@ const normalizeAnswer = (text) => String(text || '')
             return shuffleArray([...incorrect, target]);
           }, [currentQ, activeWords, words]);
 
+          const advanceQuestion = (delay) => {
+            cancelPendingAdvance();
+            advanceTimer.current = setTimeout(() => {
+                advanceTimer.current = null;
+                if (currentQ < activeWords.length - 1) {
+                    setCurrentQ(q => q + 1);
+                    setSelectedOption(null);
+                    setIsCorrect(null);
+                    setSentenceFeedback(null);
+                } else {
+                    setPhase('result');
+                }
+            }, delay);
+          };
+
           const handleAnswer = (opt) => {
             if (selectedOption) return;
             setSelectedOption(opt);
@@ -1265,32 +1305,33 @@ const normalizeAnswer = (text) => String(text || '')
             setIsCorrect(correct);
             if (correct) { setScore(s => s + 1); playSoundEffect('correct'); }
             else playSoundEffect('wrong');
+            advanceQuestion(1500);
+          };
 
-            setTimeout(() => {
-                if (currentQ < activeWords.length - 1) {
-                    setCurrentQ(q => q + 1);
-                    setSelectedOption(null);
-                    setIsCorrect(null);
-                } else {
-                    setPhase('result');
-                }
-            }, 1500);
+          const handleSentenceCheck = (correct) => {
+            if (sentenceFeedback !== null) return;
+            setSentenceFeedback(correct);
+            if (correct) {
+              setScore(s => s + 1);
+              playSoundEffect('correct');
+            } else {
+              playSoundEffect('wrong');
+            }
+            advanceQuestion(correct ? 1400 : 2100);
           };
 
           if (phase === 'category') return <CategorySelectionScreen words={words} folders={folders} title="Quiz: Category" onSelect={(folderIds) => { setSelectedCategories(folderIds); setPhase('setup'); }} />;
-          if (phase === 'setup') return <WordSelectionScreen words={words} folders={folders} selectedFolderIds={selectedCategories} title="Select Words" onBack={() => setPhase('category')} onStart={(sw) => { 
+          if (phase === 'setup') return <WordSelectionScreen words={words} folders={folders} selectedFolderIds={selectedCategories} title="Select Words" onBack={resetQuizToCategory} onStart={(sw) => {
               const shuffled = shuffleArray(sw);
               setActiveWords(shuffled); 
               
-              const types = shuffled.map(w => {
-                  const availableTypes = ['ENG_TO_MAN', 'MAN_TO_ENG', 'AUDIO_TO_ENG'];
-                  if (w.meaning) availableTypes.push('MEANING_TO_ENG');
-                  return availableTypes[Math.floor(Math.random() * availableTypes.length)];
-              });
-              setQuestionTypes(types);
+              setQuestionTypes(assignQuizQuestionTypes(shuffled));
 
               setCurrentQ(0); 
               setScore(0); 
+              setSelectedOption(null);
+              setIsCorrect(null);
+              setSentenceFeedback(null);
               setPhase('playing'); 
           }} />;
           
@@ -1310,7 +1351,7 @@ const normalizeAnswer = (text) => String(text || '')
                       {isPerfect && <p className="text-lg md:text-xl font-black text-emerald-600 mb-3">You got everything correct!</p>}
                       <div className="mb-3 px-4 py-2 bg-indigo-50 border border-indigo-100 text-indigo-700 rounded-full text-sm font-black">Student: {username || 'Student'}</div>
                       <p className="text-2xl font-bold text-indigo-600 mb-8">Score: {score} / {activeWords.length}</p>
-                      <button onClick={() => setPhase('category')} className="px-10 py-4 bg-indigo-600 text-white rounded-2xl font-bold shadow-lg hover:bg-indigo-700 transition-colors">New Quiz</button>
+                      <button onClick={resetQuizToCategory} className="px-10 py-4 bg-indigo-600 text-white rounded-2xl font-bold shadow-lg hover:bg-indigo-700 transition-colors">New Quiz</button>
                   </div>
               </div>
             );
@@ -1320,7 +1361,7 @@ const normalizeAnswer = (text) => String(text || '')
           const qType = questionTypes[currentQ] || 'ENG_TO_MAN';
 
           return (
-            <div className="h-full flex flex-col max-w-2xl mx-auto p-3 md:p-8 relative overflow-hidden pb-safe">
+            <div className={qType === SENTENCE_BUILDER ? 'min-h-full max-w-4xl mx-auto w-full p-3 md:p-8 relative pb-safe' : 'h-full flex flex-col max-w-2xl mx-auto p-3 md:p-8 relative overflow-hidden pb-safe'}>
                 {showQuitConfirm && (
                     <div className="absolute inset-0 z-50 bg-white/95 backdrop-blur-sm flex flex-col items-center justify-center p-8 animate-in fade-in rounded-2xl">
                         <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mb-4">
@@ -1330,7 +1371,7 @@ const normalizeAnswer = (text) => String(text || '')
                         <p className="text-gray-500 mb-6 text-center">Your score will not be saved. Are you sure?</p>
                         <div className="flex gap-4 w-full max-w-sm">
                             <button onClick={() => setShowQuitConfirm(false)} className="flex-1 py-4 rounded-xl border-2 border-gray-200 bg-white text-gray-600 font-bold hover:bg-gray-50">Cancel</button>
-                            <button onClick={() => { setShowQuitConfirm(false); setPhase('category'); }} className="flex-1 py-4 rounded-xl bg-red-500 text-white font-bold shadow-lg hover:bg-red-600">Quit</button>
+                            <button onClick={resetQuizToCategory} className="flex-1 py-4 rounded-xl bg-red-500 text-white font-bold shadow-lg hover:bg-red-600">Quit</button>
                         </div>
                     </div>
                 )}
@@ -1344,7 +1385,7 @@ const normalizeAnswer = (text) => String(text || '')
                     </div>
                 </div>
                 
-                <div className="bg-white rounded-3xl md:rounded-[2.5rem] p-4 md:p-10 shadow-xl border border-gray-100 text-center mb-3 md:mb-8 min-h-[140px] md:min-h-[220px] flex flex-col justify-center items-center shrink-0">
+                {qType !== SENTENCE_BUILDER && <div className="bg-white rounded-3xl md:rounded-[2.5rem] p-4 md:p-10 shadow-xl border border-gray-100 text-center mb-3 md:mb-8 min-h-[140px] md:min-h-[220px] flex flex-col justify-center items-center shrink-0">
                     <span className="text-indigo-400 text-xs font-black uppercase tracking-widest block mb-4">
                         {qType === 'ENG_TO_MAN' && "Translate to Mandarin"}
                         {qType === 'MAN_TO_ENG' && "Translate to English"}
@@ -1368,8 +1409,17 @@ const normalizeAnswer = (text) => String(text || '')
                     )}
                     {qType === 'AUDIO_TO_ENG' && <span className="text-xs text-gray-400 font-bold">Click to replay</span>}
                 </div>
+                }
                 
-                <div className="grid grid-cols-2 gap-2 md:gap-4 pb-2 flex-1 min-h-0">
+                {qType === SENTENCE_BUILDER ? (
+                    <SentenceBuilderQuestion
+                      key={`${qWord.id}-${currentQ}`}
+                      word={qWord}
+                      feedback={sentenceFeedback}
+                      onCheck={handleSentenceCheck}
+                      onListen={() => playAudio(qWord.word, 'en-US')}
+                    />
+                ) : <div className="grid grid-cols-2 gap-2 md:gap-4 pb-2 flex-1 min-h-0">
                     {options.map(opt => {
                         let style = "bg-white border-2 border-gray-100 text-gray-700 hover:border-indigo-300 hover:shadow-md";
                         if (selectedOption) {
@@ -1383,7 +1433,7 @@ const normalizeAnswer = (text) => String(text || '')
                             </button>
                         );
                     })}
-                </div>
+                </div>}
             </div>
           );
         }
