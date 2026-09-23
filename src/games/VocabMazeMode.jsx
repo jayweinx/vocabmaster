@@ -1,10 +1,19 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { ChevronLeft, Check, Volume2 } from "lucide-react";
+import {
+  ChevronLeft,
+  ChevronRight,
+  Check,
+  Folder,
+  Volume2,
+} from "lucide-react";
 import {
   buildMazeQuestion,
   generateMazeGraph,
   MAZE_TTS_LANG,
+  mazeDescendantFolderIds,
   mazeEdgeKey,
+  mazeFolderPath,
+  mazeFolderUsableWords,
   mazeNeighbors,
   mazeShortestPath,
   meaningLines,
@@ -42,43 +51,29 @@ const Meaning = ({ word }) => (
     ))}
   </span>
 );
-const childFolderIds = (folders, rootId) => {
-  if (!rootId) return null;
-  const ids = new Set([rootId]);
-  let changed = true;
-  while (changed) {
-    changed = false;
-    folders.forEach((folder) => {
-      if (ids.has(folder.parentId) && !ids.has(folder.id)) {
-        ids.add(folder.id);
-        changed = true;
-      }
-    });
-  }
-  return ids;
-};
-const folderLabel = (folder, folders) => {
-  const path = [folder.name];
-  let parent = folders.find((item) => item.id === folder.parentId);
-  while (parent) {
-    path.unshift(parent.name);
-    parent = folders.find((item) => item.id === parent.parentId);
-  }
-  return path.join(" › ");
-};
 
-function Setup({ words, folders, onStart, onBack, topRef }) {
-  const [folderId, setFolderId] = useState("");
-  const [selected, setSelected] = useState(() => new Set());
+function Setup({
+  words,
+  folders,
+  onStart,
+  onBack,
+  topRef,
+  folderId,
+  setFolderId,
+  step,
+  setStep,
+  selected,
+  setSelected,
+}) {
   const ids = useMemo(
-    () => childFolderIds(folders, folderId),
+    () => mazeDescendantFolderIds(folders, folderId),
     [folders, folderId],
   );
   const candidates = useMemo(
     () =>
       words
         .filter(usableMazeWord)
-        .filter((word) => !ids || ids.has(word.folderId)),
+        .filter((word) => ids && ids.has(word.folderId)),
     [words, ids],
   );
   const picked = candidates.filter((word) => selected.has(word.id));
@@ -88,107 +83,187 @@ function Setup({ words, folders, onStart, onBack, topRef }) {
       next.has(id) ? next.delete(id) : next.add(id);
       return next;
     });
-  return (
-    <div ref={topRef} className="min-h-full bg-gray-50 p-5 sm:p-7 pb-safe">
-      <div className="mx-auto max-w-4xl">
-        <button
-          onClick={onBack}
-          className="mb-5 inline-flex items-center gap-2 font-black text-gray-500 hover:text-indigo-600"
-        >
-          <ChevronLeft size={20} /> Back to Games
-        </button>
-        <section className="overflow-hidden rounded-3xl border border-indigo-100 bg-white shadow-sm">
-          <header className="bg-gradient-to-r from-indigo-600 to-violet-600 p-6 text-white sm:p-8">
-            <div className="text-5xl">🕸️</div>
-            <h2 className="mt-3 text-3xl font-black">Build a Vocab Maze</h2>
-            <p className="mt-2 text-indigo-100">
-              Choose at least 3 English vocabulary words. The maze uses
-              word-to-meaning, meaning-to-word, audio, and matching challenges.
-            </p>
-          </header>
-          <div className="p-5 sm:p-7">
-            <label className="text-sm font-black uppercase tracking-wide text-gray-500">
-              Vocabulary folder
-            </label>
-            <select
-              value={folderId}
-              onChange={(event) => {
-                setFolderId(event.target.value);
-                setSelected(new Set());
-              }}
-              className="mt-2 w-full rounded-xl border-2 border-gray-200 px-4 py-3 font-bold outline-none focus:border-indigo-500"
-            >
-              <option value="">All usable vocabulary</option>
-              {folders.map((folder) => (
-                <option key={folder.id} value={folder.id}>
-                  {folderLabel(folder, folders)}
-                </option>
-              ))}
-            </select>
-            <div className="mt-6 flex items-end justify-between gap-3">
-              <div>
-                <h3 className="text-xl font-black text-gray-800">
-                  Select words
-                </h3>
-                <p className="text-sm text-gray-500">
-                  {picked.length} selected · at least 3 required
-                </p>
-              </div>
+  const current = folders.find((folder) => folder.id === folderId);
+  const children = folders.filter(
+    (folder) => (folder.parentId || null) === (folderId || null),
+  );
+  const path = folderId
+    ? mazeFolderPath(folders, folderId).join(" › ")
+    : "All Folders";
+  const count = (id) => mazeFolderUsableWords(words, folders, id).length;
+  const changeFolder = (id) => {
+    setFolderId(id);
+    setSelected(new Set());
+  };
+
+  if (step === "folders") {
+    return (
+      <div
+        ref={topRef}
+        className="min-h-full bg-gray-50 p-5 sm:p-7 pb-safe"
+      >
+        <div className="mx-auto max-w-6xl">
+          <button
+            onClick={
+              folderId
+                ? () => changeFolder(current?.parentId || null)
+                : onBack
+            }
+            className="mb-5 inline-flex items-center gap-2 font-black text-gray-500"
+          >
+            <ChevronLeft size={20} />
+            {folderId ? "Back" : "Back to Games"}
+          </button>
+          <p className="text-sm font-bold text-indigo-600">Mazes › {path}</p>
+          <h2 className="text-3xl font-black text-gray-800">Vocab Maze</h2>
+          <p className="mt-2 text-gray-500">
+            Choose a vocabulary folder for your maze.
+          </p>
+          <span className="mt-4 inline-block rounded-full bg-indigo-100 px-3 py-1 text-xs font-black text-indigo-700">
+            MAZES
+          </span>
+          {current && (
+            <div className="mt-6 rounded-3xl bg-white p-5 shadow-sm">
+              <h3 className="text-xl font-black">{current.name}</h3>
+              <p className="text-gray-500">
+                {candidates.length} usable words
+              </p>
               <button
-                onClick={() =>
-                  setSelected(
-                    candidates.length > 0 && selected.size === candidates.length
-                      ? new Set()
-                      : new Set(candidates.map((word) => word.id)),
-                  )
-                }
-                className="rounded-xl bg-indigo-50 px-4 py-2 font-black text-indigo-600"
+                disabled={candidates.length < 3}
+                onClick={() => setStep("words")}
+                className="mt-4 rounded-xl bg-indigo-600 px-5 py-3 font-black text-white disabled:opacity-40"
               >
-                {candidates.length > 0 && selected.size === candidates.length
-                  ? "Clear all"
-                  : "Select all"}
+                Select Words
               </button>
             </div>
-            <div className="mt-3 space-y-2">
-              {candidates.map((word) => (
-                <label
-                  key={word.id}
-                  className="flex cursor-pointer items-start gap-3 rounded-xl border border-gray-100 p-3 hover:bg-indigo-50"
+          )}
+          <div className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            {children.map((folder) => (
+              <button
+                key={folder.id}
+                onClick={() => changeFolder(folder.id)}
+                className={`rounded-3xl border bg-white p-6 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-indigo-300 focus:outline-none focus:ring-4 focus:ring-indigo-100 ${
+                  count(folder.id)
+                    ? "border-indigo-100"
+                    : "border-gray-100 opacity-60"
+                }`}
+              >
+                <Folder className="text-indigo-600" size={32} />
+                <strong className="mt-4 block text-xl">{folder.name}</strong>
+                <span className="mt-2 block text-gray-500">
+                  {count(folder.id)} words
+                </span>
+                <span className="mt-3 flex items-center gap-1 font-black text-indigo-600">
+                  Open Folder <ChevronRight size={16} />
+                </span>
+              </button>
+            ))}
+          </div>
+          {folderId && !children.length && !candidates.length && (
+            <p className="mt-6 rounded-2xl bg-white p-6 text-center text-gray-500">
+              No usable vocabulary in this folder yet.
+            </p>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  if (step === "words") {
+    return (
+      <div
+        ref={topRef}
+        className="min-h-full bg-gray-50 p-5 sm:p-7 pb-safe"
+      >
+        <div className="mx-auto max-w-4xl">
+          <button
+            onClick={() => setStep("folders")}
+            className="mb-5 inline-flex items-center gap-2 font-black text-gray-500 hover:text-indigo-600"
+          >
+            <ChevronLeft size={20} /> Back to {current?.name || "folder"}
+          </button>
+          <section className="overflow-hidden rounded-3xl border border-indigo-100 bg-white shadow-sm">
+            <header className="p-6 sm:p-8">
+              <h2 className="text-3xl font-black">
+                Select Words for Maze
+              </h2>
+              <p className="mt-2 text-gray-500">
+                Folder: {path} · {candidates.length} usable words
+              </p>
+            </header>
+            <div className="p-5 sm:p-7">
+              <div className="mt-6 flex items-end justify-between gap-3">
+                <div>
+                  <h3 className="text-xl font-black text-gray-800">
+                    Select words
+                  </h3>
+                  <p className="text-sm text-gray-500">
+                    {picked.length} selected · at least 3 required
+                  </p>
+                </div>
+                <button
+                  onClick={() =>
+                    setSelected(
+                      candidates.length > 0 &&
+                        selected.size === candidates.length
+                        ? new Set()
+                        : new Set(candidates.map((word) => word.id)),
+                    )
+                  }
+                  className="rounded-xl bg-indigo-50 px-4 py-2 font-black text-indigo-600"
                 >
-                  <input
-                    type="checkbox"
-                    checked={selected.has(word.id)}
-                    onChange={() => toggle(word.id)}
-                    className="mt-1 h-5 w-5 accent-indigo-600"
-                  />
-                  <span>
-                    <strong className="block break-words text-gray-800">
-                      {word.word}
-                    </strong>
-                    <span className="mt-1 block text-sm text-gray-500">
-                      <Meaning word={word} />
-                    </span>
-                  </span>
-                </label>
-              ))}
-              {!candidates.length && (
-                <p className="rounded-xl bg-gray-50 p-6 text-center font-bold text-gray-400">
-                  No usable vocabulary is available in this folder.
+                  {candidates.length > 0 &&
+                  selected.size === candidates.length
+                    ? "Clear all"
+                    : "Select all"}
+                </button>
+              </div>
+              {candidates.length >= 50 && (
+                <p className="mt-3 text-sm font-bold text-amber-700">
+                  For the best Maze experience, 10–30 words is recommended.
                 </p>
               )}
+              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                {candidates.map((word) => (
+                  <label
+                    key={word.id}
+                    className="flex cursor-pointer items-start gap-3 rounded-xl border border-gray-100 p-3 hover:bg-indigo-50"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selected.has(word.id)}
+                      onChange={() => toggle(word.id)}
+                      className="mt-1 h-5 w-5 accent-indigo-600"
+                    />
+                    <span className="min-w-0">
+                      <strong className="block break-words text-gray-800">
+                        {word.word}
+                      </strong>
+                      <span className="mt-1 block text-sm text-gray-500">
+                        <Meaning word={word} />
+                      </span>
+                    </span>
+                  </label>
+                ))}
+                {!candidates.length && (
+                  <p className="rounded-xl bg-gray-50 p-6 text-center font-bold text-gray-400">
+                    No usable vocabulary is available in this folder.
+                  </p>
+                )}
+              </div>
+              <button
+                disabled={picked.length < 3}
+                onClick={() => onStart(picked)}
+                className="mt-6 w-full rounded-xl bg-indigo-600 py-4 text-lg font-black text-white disabled:cursor-not-allowed disabled:opacity-45"
+              >
+                Continue to Maze Setup
+              </button>
             </div>
-            <button
-              disabled={picked.length < 3}
-              onClick={() => onStart(picked)}
-              className="mt-6 w-full rounded-xl bg-indigo-600 py-4 text-lg font-black text-white disabled:cursor-not-allowed disabled:opacity-45"
-            >
-              Continue to Maze Setup
-            </button>
-          </div>
-        </section>
+          </section>
+        </div>
       </div>
-    </div>
-  );
+    );
+  }
 }
 
 function Question({ question, hearts, onChoice, onMatches, answerState }) {
@@ -341,8 +416,11 @@ export default function VocabMazeMode({
   setIsDirty,
   onBackToGames,
 }) {
-  const [phase, setPhase] = useState("setup"),
-    [activeWords, setActiveWords] = useState([]),
+  const [phase, setPhase] = useState("setup");
+  const [setupFolderId, setSetupFolderId] = useState(null);
+  const [setupStep, setSetupStep] = useState("folders");
+  const [setupSelected, setSetupSelected] = useState(() => new Set());
+  const [activeWords, setActiveWords] = useState([]),
     [baseDots, setBaseDots] = useState(() =>
       Number(localStorage.getItem("evm_maze_dots") || 10),
     ),
@@ -648,6 +726,12 @@ export default function VocabMazeMode({
         }}
         onBack={onBackToGames}
         topRef={topRef}
+        folderId={setupFolderId}
+        setFolderId={setSetupFolderId}
+        step={setupStep}
+        setStep={setSetupStep}
+        selected={setupSelected}
+        setSelected={setSetupSelected}
       />
     );
   if (phase === "options")
@@ -655,7 +739,10 @@ export default function VocabMazeMode({
       <div ref={topRef} className="min-h-full bg-gray-50 p-5 sm:p-7 pb-safe">
         <div className="mx-auto max-w-3xl">
           <button
-            onClick={() => setPhase("setup")}
+            onClick={() => {
+              setSetupStep("words");
+              setPhase("setup");
+            }}
             className="mb-5 inline-flex items-center gap-2 font-black text-gray-500"
           >
             <ChevronLeft size={20} /> Back to words

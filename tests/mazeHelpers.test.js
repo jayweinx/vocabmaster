@@ -4,12 +4,39 @@ import {
   buildMazeQuestion,
   generateMazeGraph,
   MAZE_TTS_LANG,
+  mazeDescendantFolderIds,
   mazeEdgeKey,
+  mazeFolderPath,
+  mazeFolderUsableWords,
   mazeReachableWithout,
   mazeShortestPath,
   meaningKey,
   meaningLines,
 } from "../src/games/mazeHelpers.js";
+
+test("maze folder helpers support nested, empty, non-hardcoded trees", () => {
+  const folders = [
+    { id: "x", name: "Alpha", parentId: null },
+    { id: "y", name: "Topic", parentId: "x" },
+    { id: "z", name: "Empty", parentId: null },
+  ];
+  const words = [
+    {
+      id: "1",
+      folderId: "y",
+      word: "source of income",
+      meaning: "income",
+    },
+    { id: "2", folderId: "z", word: "", meaning: "bad" },
+  ];
+  assert.deepEqual([...mazeDescendantFolderIds(folders, "x")].sort(), [
+    "x",
+    "y",
+  ]);
+  assert.deepEqual(mazeFolderPath(folders, "y"), ["Alpha", "Topic"]);
+  assert.equal(mazeFolderUsableWords(words, folders, "x").length, 1);
+  assert.equal(mazeFolderUsableWords(words, folders, "z").length, 0);
+});
 
 const words = [
   { id: "one", word: "ancient", meaning: "very old", mandarin: "古老的" },
