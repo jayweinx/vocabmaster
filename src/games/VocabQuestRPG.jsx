@@ -15,7 +15,7 @@ function VirtualJoystick({ onInput }) {
     const radius = box.width / 2; const length = Math.hypot(dx, dy) || 1; const scale = Math.min(1, radius / length); const vector = { x: (dx / radius) * scale, y: (dy / radius) * scale }; setKnob(vector); onInput(vector);
   };
   const stop = () => { setKnob({ x: 0, y: 0 }); onInput({ x: 0, y: 0 }); };
-  return <div ref={ref} onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); update(e); }} onPointerMove={(e) => e.currentTarget.hasPointerCapture(e.pointerId) && update(e)} onPointerUp={stop} onPointerCancel={stop} className="absolute bottom-4 left-4 z-20 h-24 w-24 rounded-full border-4 border-white/60 bg-indigo-900/25 shadow-lg touch-none md:hidden"><div style={{ transform: `translate(calc(-50% + ${knob.x * 30}px), calc(-50% + ${knob.y * 30}px))` }} className="absolute left-1/2 top-1/2 h-8 w-8 rounded-full bg-white/80" /></div>;
+  return <div ref={ref} aria-label="Move your character" onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); update(e); }} onPointerMove={(e) => e.currentTarget.hasPointerCapture(e.pointerId) && update(e)} onPointerUp={stop} onPointerCancel={stop} className="absolute bottom-4 left-4 z-20 h-24 w-24 rounded-full border-4 border-white/60 bg-indigo-900/25 shadow-lg touch-none lg:hidden"><div style={{ transform: `translate(calc(-50% + ${knob.x * 30}px), calc(-50% + ${knob.y * 30}px))` }} className="absolute left-1/2 top-1/2 h-8 w-8 rounded-full bg-white/80" /></div>;
 }
 
 function ChallengeModal({ challenge, words, onDone }) {
