@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { BookOpen, Brain, List, Plus, ChevronRight, ChevronLeft, RotateCw, Check, X, Trash2, Edit2, Save, Languages, Award, Keyboard, Volume2, CheckCircle, History, AlertCircle, Clock, EyeOff, AlertTriangle, Square, CheckSquare, Zap, Delete, Folder, Download, Upload, Info, Search, Cloud, CloudOff, LogIn, LogOut, Copy } from 'lucide-react';
 import TeacherLogin from './components/TeacherLogin';
+import VocabMazeMode from './games/VocabMazeMode';
 import { isSupabaseConfigured } from './lib/supabase';
 import { analyseDocxFile } from './services/docxImportService';
 import { getCurrentSession, isAllowlistedTeacher, loadCloudLibrary, onAuthChange, signOutTeacher, syncCloudLibrary, validateLibrary } from './services/vocabularyService';
@@ -1793,6 +1794,10 @@ const normalizeAnswer = (text) => String(text || '')
             return <AdventureMode words={words} folders={folders} setIsDirty={setIsDirty} username={username} onBackToGames={returnToHub} />;
           }
 
+          if (selectedGame === 'maze') {
+            return <VocabMazeMode words={words} folders={folders} setIsDirty={setIsDirty} username={username} onBackToGames={returnToHub} />;
+          }
+
           const games = [
             {
               id: 'adventure',
@@ -1808,9 +1813,9 @@ const normalizeAnswer = (text) => String(text || '')
               icon: '🕸️',
               title: 'Vocab Maze',
               description: 'Choose routes, escape the ghost, collect items and clear every vocabulary challenge.',
-              status: 'Coming Soon',
-              actionLabel: 'Coming Soon',
-              available: false
+              status: 'Available',
+              actionLabel: 'Play',
+              available: true
             },
             {
               id: 'arena',
