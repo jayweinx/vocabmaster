@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { cameraFor, createRpgResult, hasThreeDistinctMeanings, isBossUnlocked, movePlayer, nextRpgStats, normalizeMovement, rpgQuestionMode, scoreForAnswer, selectDistinctMeaningWords, shouldOfferRetry } from '../src/games/rpg/rpgHelpers.js';
+import { cameraFor, correctAnswerText, createRpgResult, hasThreeDistinctMeanings, isBossUnlocked, movePlayer, nextRpgStats, normalizeMovement, rpgQuestionMode, scoreForAnswer, selectDistinctMeaningWords, shouldOfferRetry } from '../src/games/rpg/rpgHelpers.js';
 
 test('movement normalizes diagonals and blocks obstacle movement', () => {
   const diagonal = normalizeMovement(1, 1, 10);
@@ -27,4 +27,8 @@ test('locked gate blocks movement, boss answers update final stats, and match me
   assert.equal(hasThreeDistinctMeanings([{ meaning: 'a' }, { meaning: 'b' }, { meaning: 'c' }]), true);
   assert.equal(hasThreeDistinctMeanings([{ meaning: 'a' }, { meaning: 'a' }, { meaning: 'c' }]), false);
   assert.deepEqual(selectDistinctMeaningWords([{ id: 'a', meaning: 'same' }, { id: 'b', meaning: 'same' }, { id: 'c', meaning: 'different' }, { id: 'd', meaning: 'third' }]).map((word) => word.id), ['a', 'c', 'd']);
+  const word = { word: 'source of income', meaning: 'where money comes from', mandarin: '收入来源' };
+  assert.equal(correctAnswerText('WORD_TO_MEANING', word), 'where money comes from · 收入来源');
+  assert.equal(correctAnswerText('MEANING_TO_WORD', word), 'source of income');
+  assert.match(correctAnswerText('MATCH', word, [word]), /source of income → where money comes from/);
 });

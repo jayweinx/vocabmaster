@@ -72,6 +72,12 @@ export const selectDistinctMeaningWords = (words, count = 3) => {
   return [];
 };
 
+export const correctAnswerText = (mode, target, pairs = []) => {
+  if (mode === 'MEANING_TO_WORD') return String(target?.word || '').trim();
+  if (mode === 'MATCH') return pairs.map((word) => `${word.word} → ${[word.meaning, word.mandarin].filter(Boolean).join(' · ')}`).join('\n');
+  return [target?.meaning, target?.mandarin].filter(Boolean).join(' · ');
+};
+
 export const createRpgResult = ({ username, folderId, selectedWords, stats, startedAt }) => ({
   student: username || 'Student', folderId: folderId || null, selectedWordIds: selectedWords.map((word) => word.id),
   score: stats.score, accuracy: stats.correct + stats.wrong ? Math.round((stats.correct / (stats.correct + stats.wrong)) * 100) : 0,
