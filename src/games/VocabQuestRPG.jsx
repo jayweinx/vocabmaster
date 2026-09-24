@@ -1,11 +1,14 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import SentenceBuilderQuestion from '../components/SentenceBuilderQuestion';
-import { getSentenceBuilderMeaningLines, isSentenceBuilderEligible } from '../quiz/sentenceBuilderHelpers';
+import { ArrowLeft } from 'lucide-react';
+import { isSentenceBuilderEligible } from '../quiz/sentenceBuilderHelpers';
+import RPGChallengeModal from './rpg/RPGChallengeModal';
+import { RPGHud, RPGInteractionButton, RPGNotice } from './rpg/RPGHud';
+import RPGMap from './rpg/RPGMap';
+import RPGMapSelector from './rpg/RPGMapSelector';
+import RPGResultScreen from './rpg/RPGResultScreen';
+import VirtualJoystick from './rpg/VirtualJoystick';
 import {
-  RPG_OBSTACLES,
-  RPG_WORLD,
   cameraFor,
-  correctAnswerText,
   createRpgResult,
   isBossUnlocked,
   isUsableRpgWord,
@@ -15,94 +18,396 @@ import {
   selectDistinctMeaningWords,
   shouldOfferRetry,
 } from './rpg/rpgHelpers';
+import {
+  getRpgMapTheme,
+  persistRpgMapTheme,
+  readRpgMapTheme,
+} from './rpg/mapThemes';
 
-const positions = [[550, 390], [1020, 410], [1480, 520], [620, 650], [900, 690], [1450, 960], [940, 1010], [250, 570], [1640, 560], [520, 1040], [1150, 530], [1320, 650]];
-const shuffle = (items) => [...items].sort(() => Math.random() - 0.5);
 const VOCAB_QUEST_RANDOM_SELECTION = {
   counts: [10, 15, 20],
   isEligible: isUsableRpgWord,
 };
-const play = (text) => { if (window.speechSynthesis && text) { window.speechSynthesis.cancel(); const u = new SpeechSynthesisUtterance(text); u.lang = 'en-US'; window.speechSynthesis.speak(u); } };
 
-function VirtualJoystick({ onInput }) {
-  const ref = useRef(null);
-  const [knob, setKnob] = useState({ x: 0, y: 0 });
-  const update = (event) => {
-    const box = ref.current.getBoundingClientRect(); const dx = event.clientX - (box.left + box.width / 2); const dy = event.clientY - (box.top + box.height / 2);
-    const radius = box.width / 2; const length = Math.hypot(dx, dy) || 1; const scale = Math.min(1, radius / length); const vector = { x: (dx / radius) * scale, y: (dy / radius) * scale }; setKnob(vector); onInput(vector);
-  };
-  const stop = () => { setKnob({ x: 0, y: 0 }); onInput({ x: 0, y: 0 }); };
-  return <div ref={ref} aria-label="Move your character" onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); update(e); }} onPointerMove={(e) => e.currentTarget.hasPointerCapture(e.pointerId) && update(e)} onPointerUp={stop} onPointerCancel={stop} className="absolute bottom-4 left-4 z-20 h-24 w-24 rounded-full border-4 border-white/60 bg-indigo-900/25 shadow-lg touch-none lg:hidden"><div style={{ transform: `translate(calc(-50% + ${knob.x * 30}px), calc(-50% + ${knob.y * 30}px))` }} className="absolute left-1/2 top-1/2 h-8 w-8 rounded-full bg-white/80" /></div>;
-}
+const INITIAL_STATS = {
+  score: 0,
+  coins: 0,
+  hearts: 3,
+  correct: 0,
+  wrong: 0,
+  recovered: 0,
+  combo: 0,
+  bestCombo: 0,
+  encounters: 0,
+};
 
-function ChallengeModal({ challenge, words, onDone }) {
-  const [selected, setSelected] = useState(null); const [feedback, setFeedback] = useState(null); const [matches, setMatches] = useState({}); const [finished, setFinished] = useState(false);
-  const timerRef = useRef(null);
-  const target = challenge.word; const lines = getSentenceBuilderMeaningLines(target);
-  const options = useMemo(() => shuffle([target, ...shuffle(words.filter((w) => w.id !== target.id)).slice(0, 3)]), [target, words]);
-  const matchMeanings = useMemo(() => shuffle(challenge.pairs || words.slice(0, 3)), [challenge.id, challenge.attempt, words]);
-  useEffect(() => { const audioTimer = challenge.mode === 'AUDIO_TO_MEANING' ? setTimeout(() => play(target.word), 250) : null; return () => { if (audioTimer) clearTimeout(audioTimer); if (timerRef.current) clearTimeout(timerRef.current); }; }, [challenge, target.word]);
-  const finish = (correct) => { if (finished) return; setFinished(true); setFeedback(correct); timerRef.current = setTimeout(() => onDone(correct), correct ? 1100 : 1900); };
-  const optionText = (word) => challenge.mode === 'MEANING_TO_WORD' ? word.word : [word.meaning, word.mandarin].filter(Boolean).join(' · ');
-  const pairWords = challenge.pairs || words.slice(0, 3);
-  return <div className="absolute inset-0 z-40 flex items-end justify-center bg-slate-950/60 p-3 sm:items-center"><div className="max-h-[88%] w-full max-w-2xl overflow-y-auto rounded-3xl bg-white p-5 shadow-2xl sm:p-8">
-    {challenge.mode === 'SENTENCE_BUILDER' ? <SentenceBuilderQuestion word={target} feedback={feedback} onListen={() => play(target.word)} onCheck={finish} /> : <>
-      <p className="text-xs font-black uppercase tracking-widest text-indigo-500">{challenge.boss ? 'Boss challenge' : challenge.special ? 'Treasure challenge' : 'Village challenge'}</p>
-      {challenge.mode === 'AUDIO_TO_MEANING' ? <button onClick={() => play(target.word)} className="mt-4 rounded-full bg-indigo-100 p-5 text-2xl">🔊</button> : challenge.mode === 'MEANING_TO_WORD' ? <div className="mt-4 space-y-1">{lines.map((line) => <p key={line.label} className="break-words text-lg font-bold text-gray-700">{line.value}</p>)}</div> : <h2 className="mt-4 break-words text-2xl font-black text-gray-800 sm:text-4xl">{target.word}</h2>}
-      {challenge.mode === 'MATCH' ? <div className="mt-5 space-y-3">{pairWords.map((word) => <label key={word.id} className="flex flex-col gap-1 rounded-xl bg-indigo-50 p-3 font-bold sm:flex-row sm:items-center sm:justify-between"><span>{word.word}</span><select disabled={finished} value={matches[word.id] || ''} onChange={(e) => setMatches((m) => ({ ...m, [word.id]: e.target.value }))} className="rounded-lg border p-2"> <option value="">Choose meaning</option>{matchMeanings.map((meaning) => <option key={meaning.id} value={meaning.id}>{meaning.meaning} {meaning.mandarin && `· ${meaning.mandarin}`}</option>)}</select></label>)}<button disabled={finished || Object.keys(matches).length !== pairWords.length} onClick={() => finish(pairWords.every((word) => matches[word.id] === word.id))} className="w-full rounded-xl bg-indigo-600 p-3 font-black text-white disabled:opacity-40">Check matches</button></div> : <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2">{options.map((word) => <button key={word.id} disabled={selected || feedback !== null} onClick={() => { setSelected(word.id); finish(word.id === target.id); }} className={`min-h-16 rounded-2xl border-2 p-3 font-bold leading-snug ${selected === word.id ? (word.id === target.id ? 'border-green-500 bg-green-50' : 'border-red-500 bg-red-50') : 'border-indigo-100 hover:border-indigo-400'}`}>{optionText(word)}</button>)}</div>}
-      {feedback !== null && <p className={`mt-5 whitespace-pre-line break-words rounded-xl p-3 font-black leading-relaxed ${feedback ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>{feedback ? 'Correct!' : <>Correct answer: {correctAnswerText(challenge.mode, target, pairWords)}</>}</p>}
-    </>}
-  </div></div>;
-}
+const play = (text) => {
+  if (!window.speechSynthesis || !text) return;
+  window.speechSynthesis.cancel();
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.lang = 'en-US';
+  window.speechSynthesis.speak(utterance);
+};
 
-export default function VocabQuestRPG({ words, folders, username, setIsDirty, onBackToGames, CategorySelectionScreen, WordSelectionScreen }) {
-  const [phase, setPhase] = useState('category'); const [folderIds, setFolderIds] = useState([]); const [selectedWords, setSelectedWords] = useState([]); const [error, setError] = useState('');
-  const [player, setPlayer] = useState({ x: 500, y: 560 }); const [input, setInput] = useState({ x: 0, y: 0 }); const [viewport, setViewport] = useState({ width: 800, height: 560 });
-  const [encounters, setEncounters] = useState([]); const [challenge, setChallenge] = useState(null); const [stats, setStats] = useState({ score: 0, coins: 0, hearts: 3, correct: 0, wrong: 0, recovered: 0, combo: 0, bestCombo: 0, encounters: 0 }); const [finalStats, setFinalStats] = useState(null); const [startedAt, setStartedAt] = useState(Date.now()); const [notice, setNotice] = useState(''); const areaRef = useRef(null); const keys = useRef(new Set()); const interactRef = useRef(() => {});
-  const normal = encounters.filter((item) => !item.special); const specials = encounters.filter((item) => item.special); const bossUnlocked = isBossUnlocked({ normalCleared: normal.filter((i) => i.cleared).length, normalTotal: normal.length, specialsCleared: specials.filter((i) => i.cleared).length, specialsTotal: specials.length });
+export default function VocabQuestRPG({
+  words,
+  folders,
+  username,
+  setIsDirty,
+  onBackToGames,
+  CategorySelectionScreen,
+  WordSelectionScreen,
+}) {
+  const [phase, setPhase] = useState('category');
+  const [folderIds, setFolderIds] = useState([]);
+  const [selectedWords, setSelectedWords] = useState([]);
+  const [error, setError] = useState('');
+  const [mapThemeId, setMapThemeId] = useState(() => readRpgMapTheme(typeof window === 'undefined' ? null : window.localStorage).id);
+  const [player, setPlayer] = useState({ x: 500, y: 560 });
+  const [facing, setFacing] = useState('down');
+  const [input, setInput] = useState({ x: 0, y: 0 });
+  const [viewport, setViewport] = useState({ width: 800, height: 560 });
+  const [encounters, setEncounters] = useState([]);
+  const [challenge, setChallenge] = useState(null);
+  const [stats, setStats] = useState(INITIAL_STATS);
+  const [finalStats, setFinalStats] = useState(null);
+  const [startedAt, setStartedAt] = useState(Date.now());
+  const [notice, setNotice] = useState(null);
+  const areaRef = useRef(null);
+  const keys = useRef(new Set());
+  const interactRef = useRef(() => {});
+
+  const mapTheme = getRpgMapTheme(mapThemeId);
+  const normal = encounters.filter((item) => !item.special);
+  const specials = encounters.filter((item) => item.special);
+  const clearedCount = normal.filter((item) => item.cleared).length;
+  const bossUnlocked = isBossUnlocked({
+    normalCleared: clearedCount,
+    normalTotal: normal.length,
+    specialsCleared: specials.filter((item) => item.cleared).length,
+    specialsTotal: specials.length,
+  });
   const usable = (items) => items.filter(isUsableRpgWord);
-  useEffect(() => { if (setIsDirty) setIsDirty(phase === 'playing'); }, [phase, setIsDirty]);
-  useEffect(() => { if (!notice) return undefined; const timer = setTimeout(() => setNotice(''), 2200); return () => clearTimeout(timer); }, [notice]);
-  useEffect(() => { const resize = () => { const b = areaRef.current?.getBoundingClientRect(); if (b) setViewport({ width: b.width, height: b.height }); }; resize(); window.addEventListener('resize', resize); return () => window.removeEventListener('resize', resize); }, [phase]);
-  useEffect(() => { if (phase !== 'result' || !finalStats) return; try { localStorage.setItem('evm_rpg_best_score', String(Math.max(Number(localStorage.getItem('evm_rpg_best_score') || 0), finalStats.score))); } catch {} }, [phase, finalStats]);
-  useEffect(() => { if (phase !== 'playing') return undefined; const update = () => { const k = keys.current; setInput({ x: (k.has('ArrowRight') || k.has('d') ? 1 : 0) - (k.has('ArrowLeft') || k.has('a') ? 1 : 0), y: (k.has('ArrowDown') || k.has('s') ? 1 : 0) - (k.has('ArrowUp') || k.has('w') ? 1 : 0) }); }; const stop = () => { keys.current.clear(); setInput({ x: 0, y: 0 }); }; const down = (e) => { if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','w','a','s','d'].includes(e.key)) { e.preventDefault(); keys.current.add(e.key); update(); } if (e.key === ' ' || e.key.toLowerCase() === 'e') { e.preventDefault(); interactRef.current(); } }; const up = (e) => { keys.current.delete(e.key); update(); }; window.addEventListener('keydown', down); window.addEventListener('keyup', up); window.addEventListener('blur', stop); return () => { stop(); window.removeEventListener('keydown', down); window.removeEventListener('keyup', up); window.removeEventListener('blur', stop); }; }, [phase]);
-  useEffect(() => { if (phase !== 'playing' || challenge) return undefined; let frame; let last = performance.now(); const loop = (now) => { const step = Math.min(2.5, (now - last) / 16) * 4; last = now; setPlayer((p) => movePlayer(p, input, step, bossUnlocked ? RPG_OBSTACLES : [...RPG_OBSTACLES, { x: 1570, y: 850, w: 230, h: 45 }])); frame = requestAnimationFrame(loop); }; frame = requestAnimationFrame(loop); return () => cancelAnimationFrame(frame); }, [phase, challenge, input, bossUnlocked]);
-  const begin = (items) => { const selected = usable(items); if (selected.length < 3) { setError('Select at least 3 vocabulary items to start Vocab Quest.'); return; } if (selected.length > 20) { setError('Choose up to 20 vocabulary items for Vocab Quest.'); return; } const levelNormals = selected.slice(0, Math.min(12, selected.length)).map((word, i) => ({ id: `npc-${i}`, word, x: positions[i][0], y: positions[i][1], special: false, cleared: false, retry: null, mode: rpgQuestionMode(word, i) })); const phrase = selected.find(isSentenceBuilderEligible); const chestPairs = selectDistinctMeaningWords(selected); const chest = chestPairs.length === 3 ? [{ id: 'chest', word: chestPairs[0], pairs: chestPairs, x: 1550, y: 430, special: true, cleared: false, mode: 'MATCH' }] : []; setSelectedWords(selected); setEncounters([...levelNormals, ...(phrase ? [{ id: 'phrase', word: phrase, x: 930, y: 560, special: true, cleared: false, mode: 'SENTENCE_BUILDER' }] : []), ...chest]); setPlayer({ x: 500, y: 560 }); setStats({ score: 0, coins: 0, hearts: 3, correct: 0, wrong: 0, recovered: 0, combo: 0, bestCombo: 0, encounters: 0 }); setFinalStats(null); setStartedAt(Date.now()); setError(''); setPhase('playing'); };
-  const nearest = useMemo(() => encounters.find((item) => !item.cleared && (item.retry ? shouldOfferRetry(item.retry, stats.encounters) : true) && Math.hypot(item.x - player.x, item.y - player.y) < 78), [encounters, player, stats.encounters]);
-  const bossNear = bossUnlocked && Math.hypot(player.x - 1710, player.y - 980) < 110;
-  const interact = useCallback(() => { if (challenge) return; if (nearest) setChallenge(nearest); else if (bossNear) setChallenge({ id: 'boss', word: (encounters.find((i) => i.retry)?.word || selectedWords[0]), boss: true, bossIndex: 0, mode: 'WORD_TO_MEANING' }); }, [challenge, nearest, bossNear, encounters, selectedWords]);
+
+  useEffect(() => {
+    if (setIsDirty) setIsDirty(phase === 'playing');
+  }, [phase, setIsDirty]);
+
+  useEffect(() => {
+    if (!notice) return undefined;
+    const timer = setTimeout(() => setNotice(null), 2200);
+    return () => clearTimeout(timer);
+  }, [notice]);
+
+  useEffect(() => {
+    const resize = () => {
+      const bounds = areaRef.current?.getBoundingClientRect();
+      if (bounds) setViewport({ width: bounds.width, height: bounds.height });
+    };
+    resize();
+    window.addEventListener('resize', resize);
+    return () => window.removeEventListener('resize', resize);
+  }, [phase]);
+
+  useEffect(() => {
+    if (phase !== 'result' || !finalStats) return;
+    try {
+      localStorage.setItem('evm_rpg_best_score', String(Math.max(Number(localStorage.getItem('evm_rpg_best_score') || 0), finalStats.score)));
+    } catch {
+      // Results still display if browser storage is unavailable.
+    }
+  }, [phase, finalStats]);
+
+  useEffect(() => {
+    if (!input.x && !input.y) return;
+    if (Math.abs(input.x) > Math.abs(input.y)) setFacing(input.x > 0 ? 'right' : 'left');
+    else setFacing(input.y > 0 ? 'down' : 'up');
+  }, [input]);
+
+  useEffect(() => {
+    if (phase !== 'playing') return undefined;
+    const update = () => {
+      const held = keys.current;
+      setInput({
+        x: (held.has('ArrowRight') || held.has('d') ? 1 : 0) - (held.has('ArrowLeft') || held.has('a') ? 1 : 0),
+        y: (held.has('ArrowDown') || held.has('s') ? 1 : 0) - (held.has('ArrowUp') || held.has('w') ? 1 : 0),
+      });
+    };
+    const stop = () => {
+      keys.current.clear();
+      setInput({ x: 0, y: 0 });
+    };
+    const down = (event) => {
+      const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
+      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'w', 'a', 's', 'd'].includes(key)) {
+        event.preventDefault();
+        keys.current.add(key);
+        update();
+      }
+      if (key === ' ' || key === 'e') {
+        event.preventDefault();
+        interactRef.current();
+      }
+    };
+    const up = (event) => {
+      const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
+      keys.current.delete(key);
+      update();
+    };
+    window.addEventListener('keydown', down);
+    window.addEventListener('keyup', up);
+    window.addEventListener('blur', stop);
+    return () => {
+      stop();
+      window.removeEventListener('keydown', down);
+      window.removeEventListener('keyup', up);
+      window.removeEventListener('blur', stop);
+    };
+  }, [phase]);
+
+  useEffect(() => {
+    if (phase !== 'playing' || challenge || (!input.x && !input.y)) return undefined;
+    let frame;
+    let last = performance.now();
+    const loop = (now) => {
+      const step = Math.min(2.5, (now - last) / 16) * 4;
+      last = now;
+      const obstacles = bossUnlocked ? mapTheme.obstacles : [...mapTheme.obstacles, mapTheme.bossArea.gate];
+      setPlayer((position) => movePlayer(position, input, step, obstacles, mapTheme.world));
+      frame = requestAnimationFrame(loop);
+    };
+    frame = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(frame);
+  }, [phase, challenge, input, bossUnlocked, mapTheme]);
+
+  const begin = (items) => {
+    const selected = usable(items);
+    if (selected.length < 3) {
+      setError('Select at least 3 vocabulary items to start Vocab Quest.');
+      return;
+    }
+    if (selected.length > 20) {
+      setError('Choose up to 20 vocabulary items for Vocab Quest.');
+      return;
+    }
+    setSelectedWords(selected);
+    setError('');
+    setPhase('map');
+  };
+
+  const chooseMap = (id) => {
+    const theme = persistRpgMapTheme(id, typeof window === 'undefined' ? null : window.localStorage);
+    setMapThemeId(theme.id);
+  };
+
+  const startAdventure = (id = mapThemeId, items = selectedWords) => {
+    const theme = persistRpgMapTheme(id, typeof window === 'undefined' ? null : window.localStorage);
+    const selected = usable(items);
+    const levelNormals = selected.slice(0, Math.min(12, selected.length)).map((word, index) => ({
+      id: `npc-${index}`,
+      word,
+      ...theme.npcZones[index],
+      special: false,
+      cleared: false,
+      retry: null,
+      mode: rpgQuestionMode(word, index),
+    }));
+    const phrase = selected.find(isSentenceBuilderEligible);
+    const chestPairs = selectDistinctMeaningWords(selected);
+    const chest = chestPairs.length === 3 ? [{
+      id: 'chest',
+      word: chestPairs[0],
+      pairs: chestPairs,
+      ...theme.specialZones.chest,
+      special: true,
+      cleared: false,
+      mode: 'MATCH',
+    }] : [];
+    const phraseChallenge = phrase ? [{
+      id: 'phrase',
+      word: phrase,
+      ...theme.specialZones.phrase,
+      special: true,
+      cleared: false,
+      mode: 'SENTENCE_BUILDER',
+    }] : [];
+
+    setMapThemeId(theme.id);
+    setSelectedWords(selected);
+    setEncounters([...levelNormals, ...phraseChallenge, ...chest]);
+    setPlayer({ ...theme.spawn });
+    setFacing('up');
+    setInput({ x: 0, y: 0 });
+    setStats(INITIAL_STATS);
+    setFinalStats(null);
+    setNotice(null);
+    setStartedAt(Date.now());
+    setError('');
+    setPhase('playing');
+  };
+
+  const nearest = useMemo(() => encounters.find((item) => (
+    !item.cleared
+    && (item.retry ? shouldOfferRetry(item.retry, stats.encounters) : true)
+    && Math.hypot(item.x - player.x, item.y - player.y) < 78
+  )), [encounters, player, stats.encounters]);
+  const bossNear = bossUnlocked && Math.hypot(player.x - mapTheme.bossArea.boss.x, player.y - mapTheme.bossArea.boss.y) < 110;
+
+  const interact = useCallback(() => {
+    if (challenge) return;
+    if (nearest) setChallenge(nearest);
+    else if (bossNear) setChallenge({
+      id: 'boss',
+      word: encounters.find((item) => item.retry)?.word || selectedWords[0],
+      boss: true,
+      bossIndex: 0,
+      mode: 'WORD_TO_MEANING',
+    });
+  }, [challenge, nearest, bossNear, encounters, selectedWords]);
   interactRef.current = interact;
-  const onChallengeDone = (correct) => { const current = challenge; const nextStats = nextRpgStats(stats, { correct, recovered: Boolean(current.retry), special: current.special, boss: current.boss }); setStats(nextStats); if (current.boss) { if (!correct) { if (nextStats.hearts === 0) { setFinalStats(nextStats); setChallenge(null); setPhase('gameover'); } else setChallenge({ ...current, attempt: (current.attempt || 0) + 1 }); return; } if (current.bossIndex < 2) { const nextWord = selectedWords[(current.bossIndex + 1) % selectedWords.length]; setChallenge({ ...current, word: nextWord, bossIndex: current.bossIndex + 1, mode: rpgQuestionMode(nextWord, current.bossIndex + 1), attempt: 0 }); return; } setFinalStats(nextStats); setChallenge(null); setPhase('result'); return; } const recovered = Boolean(current.retry); const becomesUnlocked = !bossUnlocked && isBossUnlocked({ normalCleared: normal.filter((item) => item.cleared || item.id === current.id).length, normalTotal: normal.length, specialsCleared: specials.filter((item) => item.cleared || item.id === current.id).length, specialsTotal: specials.length }); setEncounters((items) => items.map((item) => item.id !== current.id ? item : correct ? { ...item, cleared: true, retry: null } : { ...item, retry: { availableAfter: stats.encounters + 3 } })); setChallenge(null); if (!correct && nextStats.hearts === 0) { setFinalStats(nextStats); setPhase('gameover'); } if (correct && recovered) setNotice('Recovered! +60'); else if (correct && becomesUnlocked) setNotice('BOSS UNLOCKED!'); };
-  if (phase === 'category') return <div className="min-h-full"><div className="p-4"><button onClick={onBackToGames} className="font-bold text-indigo-600">← Back to Games</button></div><CategorySelectionScreen words={words} folders={folders} title="Vocab Quest: Category" onSelect={(ids) => { setFolderIds(ids); setPhase('setup'); }} /></div>;
-  if (phase === 'setup') {
-    return (
-      <div className="min-h-full">
-        <div className="p-4">
-          <button
-            onClick={onBackToGames}
-            className="font-bold text-indigo-600"
-          >
-            ← Back to Games
-          </button>
-          {error && (
-            <p className="mt-3 rounded-xl bg-red-50 p-3 font-bold text-red-600">
-              {error}
-            </p>
-          )}
-        </div>
-        <WordSelectionScreen
-          words={words}
-          folders={folders}
-          selectedFolderIds={folderIds}
-          title="Choose 10–20 words for Vocab Quest"
-          randomSelection={VOCAB_QUEST_RANDOM_SELECTION}
-          onBack={() => setPhase('category')}
-          onStart={begin}
-        />
-      </div>
-    );
+
+  const onChallengeDone = (correct) => {
+    const current = challenge;
+    const nextStats = nextRpgStats(stats, {
+      correct,
+      recovered: Boolean(current.retry),
+      special: current.special,
+      boss: current.boss,
+    });
+    setStats(nextStats);
+
+    if (current.boss) {
+      if (!correct) {
+        if (nextStats.hearts === 0) {
+          setFinalStats(nextStats);
+          setChallenge(null);
+          setPhase('gameover');
+        } else {
+          setChallenge({ ...current, attempt: (current.attempt || 0) + 1 });
+        }
+        return;
+      }
+      if (current.bossIndex < 2) {
+        const nextWord = selectedWords[(current.bossIndex + 1) % selectedWords.length];
+        setChallenge({
+          ...current,
+          word: nextWord,
+          bossIndex: current.bossIndex + 1,
+          mode: rpgQuestionMode(nextWord, current.bossIndex + 1),
+          attempt: 0,
+        });
+        return;
+      }
+      setFinalStats(nextStats);
+      setChallenge(null);
+      setPhase('result');
+      return;
+    }
+
+    const recovered = Boolean(current.retry);
+    const becomesUnlocked = !bossUnlocked && isBossUnlocked({
+      normalCleared: normal.filter((item) => item.cleared || item.id === current.id).length,
+      normalTotal: normal.length,
+      specialsCleared: specials.filter((item) => item.cleared || item.id === current.id).length,
+      specialsTotal: specials.length,
+    });
+    setEncounters((items) => items.map((item) => item.id !== current.id
+      ? item
+      : correct
+        ? { ...item, cleared: true, retry: null }
+        : { ...item, retry: { availableAfter: stats.encounters + 3 } }));
+    setChallenge(null);
+
+    if (!correct && nextStats.hearts === 0) {
+      setFinalStats(nextStats);
+      setPhase('gameover');
+      return;
+    }
+    if (!correct) setNotice({ tone: 'wrong', message: 'Not quite — try another challenge.' });
+    else if (recovered) setNotice({ tone: 'success', message: 'Recovered! +60 score' });
+    else if (becomesUnlocked) setNotice({ tone: 'success', message: 'BOSS UNLOCKED!' });
+    else setNotice({ tone: 'success', message: `Correct! +${nextStats.score - stats.score} score · +${nextStats.coins - stats.coins} coins` });
+  };
+
+  if (phase === 'category') return <div className="min-h-full">
+    <div className="p-4">
+      <button type="button" onClick={onBackToGames} className="inline-flex min-h-11 items-center gap-2 rounded-xl px-3 font-bold text-indigo-600 hover:bg-indigo-50 focus:outline-none focus-visible:ring-4 focus-visible:ring-indigo-300">
+        <ArrowLeft size={18} aria-hidden="true" /> Back to Games
+      </button>
+    </div>
+    <CategorySelectionScreen words={words} folders={folders} title="Vocab Quest: Category" onSelect={(ids) => { setFolderIds(ids); setPhase('setup'); }} />
+  </div>;
+
+  if (phase === 'setup') return <div className="min-h-full">
+    <div className="p-4">
+      <button type="button" onClick={onBackToGames} className="inline-flex min-h-11 items-center gap-2 rounded-xl px-3 font-bold text-indigo-600 hover:bg-indigo-50 focus:outline-none focus-visible:ring-4 focus-visible:ring-indigo-300">
+        <ArrowLeft size={18} aria-hidden="true" /> Back to Games
+      </button>
+      {error && <p className="mt-3 rounded-xl bg-red-50 p-3 font-bold text-red-600">{error}</p>}
+    </div>
+    <WordSelectionScreen
+      words={words}
+      folders={folders}
+      selectedFolderIds={folderIds}
+      title="Choose 10–20 words for Vocab Quest"
+      randomSelection={VOCAB_QUEST_RANDOM_SELECTION}
+      onBack={() => setPhase('category')}
+      onStart={begin}
+    />
+  </div>;
+
+  if (phase === 'map') return <RPGMapSelector
+    selectedId={mapThemeId}
+    onSelect={chooseMap}
+    onStart={() => startAdventure()}
+    onBack={() => setPhase('setup')}
+  />;
+
+  if (phase === 'result' || phase === 'gameover') {
+    const result = createRpgResult({
+      username,
+      folderId: folderIds[0],
+      selectedWords,
+      stats: finalStats || stats,
+      startedAt,
+    });
+    return <RPGResultScreen
+      phase={phase}
+      result={result}
+      mapName={mapTheme.name}
+      onPlayAgain={() => startAdventure(mapTheme.id, selectedWords)}
+      onChangeWords={() => setPhase('setup')}
+      onBack={onBackToGames}
+    />;
   }
-  if (phase === 'result' || phase === 'gameover') { const result = createRpgResult({ username, folderId: folderIds[0], selectedWords, stats: finalStats || stats, startedAt }); return <div className="min-h-full p-6 text-center"><div className="mx-auto max-w-lg rounded-3xl bg-white p-8 shadow-xl"><h2 className="text-3xl font-black">{phase === 'result' ? '🏆 LEVEL COMPLETE' : '💔 GAME OVER'}</h2><p className="mt-3 font-bold">Student: {result.student}</p><p className="mt-5 text-xl">Score: {result.score} · Accuracy: {result.accuracy}%</p><p className="mt-2">Correct {result.correct} · Recovered {result.recovered} · Best Combo {result.bestCombo} · Coins {result.coins}</p><p className="mt-2">Time: {Math.floor(result.timeSeconds / 60)}:{String(result.timeSeconds % 60).padStart(2, '0')}</p><div className="mt-6 grid gap-3"><button onClick={() => begin(selectedWords)} className="rounded-xl bg-indigo-600 p-3 font-black text-white">{phase === 'result' ? 'Play Again' : 'Retry Level'}</button><button onClick={() => setPhase('setup')} className="rounded-xl bg-indigo-100 p-3 font-black text-indigo-700">Change Words</button><button onClick={onBackToGames} className="rounded-xl border p-3 font-black">← Back to Games</button></div></div></div>; }
-  const camera = cameraFor(player, viewport);
-  return <div ref={areaRef} className="relative h-full min-h-[520px] overflow-hidden bg-emerald-700 touch-none"><div className="absolute inset-0" style={{ transform: `translate(${-camera.x}px, ${-camera.y}px)`, width: RPG_WORLD.width, height: RPG_WORLD.height, backgroundImage: 'radial-gradient(#86efac 1px, transparent 1px)', backgroundSize: '24px 24px' }}><div className="absolute left-[400px] top-0 h-full w-48 bg-amber-200/70" /><div className="absolute left-0 top-[520px] h-32 w-full bg-amber-200/70" />{RPG_OBSTACLES.map((box, i) => <div key={i} className="absolute rounded-2xl border-4 border-emerald-900 bg-amber-700 shadow-lg" style={{ left: box.x, top: box.y, width: box.w, height: box.h }}>{i < 3 ? '🏠' : '🌲🌲'}</div>)}{!bossUnlocked && <div className="absolute bg-stone-600" style={{ left: 1570, top: 850, width: 230, height: 45 }}>🔒 Gate</div>}{encounters.map((item, i) => <div key={item.id} className="absolute grid h-12 w-12 place-items-center rounded-full text-3xl" style={{ left: item.x - 24, top: item.y - 24 }}>{item.cleared ? '✓' : item.special ? (item.mode === 'MATCH' ? '🎁' : '🧚') : ['👩','🧙','👨','👾'][i % 4]}</div>)}<div className="absolute grid h-20 w-20 place-items-center rounded-full border-4 border-yellow-400 bg-purple-700 text-4xl" style={{ left: 1670, top: 940 }}>{bossUnlocked ? '👑' : '🔒'}</div><div className="absolute grid h-11 w-11 place-items-center rounded-full bg-indigo-600 text-2xl shadow-xl" style={{ left: player.x - 22, top: player.y - 22 }}>🧑‍🚀</div></div><div className="absolute left-3 right-3 top-3 z-20 flex flex-wrap justify-between gap-2 rounded-xl bg-slate-950/70 px-3 py-2 text-xs font-black text-white"><span>❤️ {stats.hearts}</span><span>⭐ {stats.score}</span><span>🪙 {stats.coins}</span><span>🔥 {stats.combo}</span><span>📚 {normal.filter((i) => i.cleared).length}/{normal.length}</span></div>{nearest && <button onClick={interact} className="absolute bottom-5 right-4 z-20 rounded-2xl bg-white px-5 py-4 font-black text-indigo-700 shadow-xl">{nearest.special ? 'CHALLENGE' : 'TALK'} · E</button>} {bossNear && !nearest && <button onClick={interact} className="absolute bottom-5 right-4 z-20 rounded-2xl bg-yellow-300 px-5 py-4 font-black">BOSS · E</button>}<VirtualJoystick onInput={setInput}/>{notice && <p className="absolute left-1/2 top-16 z-30 -translate-x-1/2 rounded-full bg-yellow-300 px-4 py-2 font-black">{notice}</p>}{challenge && <ChallengeModal key={`${challenge.id}-${challenge.bossIndex || 0}-${challenge.attempt || 0}`} challenge={challenge} words={selectedWords} onDone={onChallengeDone}/>}</div>;
+
+  const camera = cameraFor(player, viewport, mapTheme.world);
+  return <div ref={areaRef} className="relative h-full min-h-[520px] w-full max-w-full touch-none overflow-hidden bg-emerald-900">
+    <RPGMap
+      mapTheme={mapTheme}
+      camera={camera}
+      player={player}
+      facing={facing}
+      encounters={encounters}
+      bossUnlocked={bossUnlocked}
+    />
+    <RPGHud
+      mapName={mapTheme.name}
+      stats={stats}
+      cleared={clearedCount}
+      total={normal.length}
+      bossUnlocked={bossUnlocked}
+    />
+    {nearest && <RPGInteractionButton kind={nearest.special ? 'challenge' : 'talk'} onClick={interact} />}
+    {bossNear && !nearest && <RPGInteractionButton kind="boss" onClick={interact} />}
+    <VirtualJoystick onInput={setInput} />
+    <RPGNotice notice={notice} />
+    {challenge && <RPGChallengeModal
+      key={`${challenge.id}-${challenge.bossIndex || 0}-${challenge.attempt || 0}`}
+      challenge={challenge}
+      words={selectedWords}
+      onDone={onChallengeDone}
+      onListen={play}
+    />}
+  </div>;
 }

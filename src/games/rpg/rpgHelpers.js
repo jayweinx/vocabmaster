@@ -57,17 +57,23 @@ export const collidesAt = (position, obstacles = RPG_OBSTACLES, radius = 20) => 
   && position.y + radius > box.y && position.y - radius < box.y + box.h
 ));
 
-export const movePlayer = (position, input, speed, obstacles = RPG_OBSTACLES) => {
+export const movePlayer = (
+  position,
+  input,
+  speed,
+  obstacles = RPG_OBSTACLES,
+  world = RPG_WORLD,
+) => {
   const delta = normalizeMovement(input.x, input.y, speed);
-  const xMove = { x: Math.max(20, Math.min(RPG_WORLD.width - 20, position.x + delta.x)), y: position.y };
+  const xMove = { x: Math.max(20, Math.min(world.width - 20, position.x + delta.x)), y: position.y };
   const afterX = collidesAt(xMove, obstacles) ? position : xMove;
-  const yMove = { x: afterX.x, y: Math.max(20, Math.min(RPG_WORLD.height - 20, afterX.y + delta.y)) };
+  const yMove = { x: afterX.x, y: Math.max(20, Math.min(world.height - 20, afterX.y + delta.y)) };
   return collidesAt(yMove, obstacles) ? afterX : yMove;
 };
 
-export const cameraFor = (player, viewport) => ({
-  x: Math.max(0, Math.min(RPG_WORLD.width - viewport.width, player.x - viewport.width / 2)),
-  y: Math.max(0, Math.min(RPG_WORLD.height - viewport.height, player.y - viewport.height / 2))
+export const cameraFor = (player, viewport, world = RPG_WORLD) => ({
+  x: Math.max(0, Math.min(world.width - viewport.width, player.x - viewport.width / 2)),
+  y: Math.max(0, Math.min(world.height - viewport.height, player.y - viewport.height / 2))
 });
 
 export const rpgQuestionMode = (word, index = 0) => {

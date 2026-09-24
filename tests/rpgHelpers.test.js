@@ -28,6 +28,12 @@ test('camera clamps and question modes reserve builder for phrases', () => {
   assert.equal(rpgQuestionMode({ word: 'traditional art' }, 3), 'WORD_TO_MEANING');
   assert.equal(rpgQuestionMode({ word: 'keep savings goals on track' }, 3), 'SENTENCE_BUILDER');
 });
+
+test('movement and camera can use a map-specific world size', () => {
+  const world = { width: 2200, height: 1450 };
+  assert.deepEqual(movePlayer({ x: 2190, y: 1440 }, { x: 1, y: 1 }, 30, [], world), { x: 2180, y: 1430 });
+  assert.deepEqual(cameraFor({ x: 2100, y: 1350 }, { width: 800, height: 600 }, world), { x: 1400, y: 850 });
+});
 test('retry spacing, boss unlock, scoring and result stats are deterministic', () => {
   assert.equal(shouldOfferRetry({ availableAfter: 5 }, 4), false); assert.equal(shouldOfferRetry({ availableAfter: 5 }, 5), true);
   assert.equal(isBossUnlocked({ normalCleared: 8, normalTotal: 10, specialsCleared: 1, specialsTotal: 1 }), true);
