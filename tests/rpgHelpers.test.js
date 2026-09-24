@@ -1,6 +1,21 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { cameraFor, correctAnswerText, createRpgResult, hasThreeDistinctMeanings, isBossUnlocked, movePlayer, nextRpgStats, normalizeMovement, rpgQuestionMode, scoreForAnswer, selectDistinctMeaningWords, shouldOfferRetry } from '../src/games/rpg/rpgHelpers.js';
+import {
+  cameraFor,
+  correctAnswerText,
+  createRpgResult,
+  hasThreeDistinctMeanings,
+  isBossUnlocked,
+  isUsableRpgWord,
+  movePlayer,
+  nextRpgStats,
+  normalizeMovement,
+  rpgQuestionMode,
+  sampleRandomWords,
+  scoreForAnswer,
+  selectDistinctMeaningWords,
+  shouldOfferRetry,
+} from '../src/games/rpg/rpgHelpers.js';
 
 test('movement normalizes diagonals and blocks obstacle movement', () => {
   const diagonal = normalizeMovement(1, 1, 10);
@@ -31,4 +46,62 @@ test('locked gate blocks movement, boss answers update final stats, and match me
   assert.equal(correctAnswerText('WORD_TO_MEANING', word), 'where money comes from · 收入来源');
   assert.equal(correctAnswerText('MEANING_TO_WORD', word), 'source of income');
   assert.match(correctAnswerText('MATCH', word, [word]), /source of income → where money comes from/);
+});
+
+test('random word selection returns exact unique 10, 15, and 20 word samples', () => {
+  const words = Array.from({ length: 25 }, (_, index) => ({
+    id: `word-${index}`,
+  }));
+  for (const count of [10, 15, 20]) {
+    const sample = sampleRandomWords(words, count, () => 0.25);
+    assert.equal(sample.length, count);
+    assert.equal(new Set(sample.map((word) => word.id)).size, count);
+  }
+});
+
+test('random word selection clamps to a smaller pool and removes duplicate ids', () => {
+  const words = Array.from({ length: 13 }, (_, index) => ({
+    id: `word-${index}`,
+  }));
+  words.push({ id: 'word-3' });
+  const sample = sampleRandomWords(words, 20, () => 0.75);
+  assert.equal(sample.length, 13);
+  assert.equal(new Set(sample.map((word) => word.id)).size, 13);
+});
+
+test('random word selection replaces the previous set and stays inside its current eligible pool', () => {
+  const previousIds = new Set(['unrelated-1', 'unrelated-2']);
+  const currentPool = Array.from({ length: 18 }, (_, index) => ({
+    id: `current-${index}`,
+  }));
+  const nextIds = new Set(
+    sampleRandomWords(currentPool, 15, () => 0.5, previousIds).map(
+      (word) => word.id,
+    ),
+  );
+  assert.equal(nextIds.size, 15);
+  assert.equal([...nextIds].some((id) => previousIds.has(id)), false);
+  assert.equal([...nextIds].every((id) => id.startsWith('current-')), true);
+});
+
+test('repeating a random count cannot return the identical id set when the pool is larger', () => {
+  const words = Array.from({ length: 30 }, (_, index) => ({
+    id: `word-${index}`,
+  }));
+  const firstIds = new Set(
+    sampleRandomWords(words, 15, () => 0).map((word) => word.id),
+  );
+  const secondIds = new Set(
+    sampleRandomWords(words, 15, () => 0, firstIds).map((word) => word.id),
+  );
+
+  assert.equal(secondIds.size, 15);
+  assert.equal([...secondIds].every((id) => firstIds.has(id)), false);
+});
+
+test('Vocab Quest random eligibility requires a word and at least one meaning', () => {
+  assert.equal(isUsableRpgWord({ word: 'apple', meaning: 'fruit' }), true);
+  assert.equal(isUsableRpgWord({ word: 'apple', mandarin: '苹果' }), true);
+  assert.equal(isUsableRpgWord({ word: 'apple' }), false);
+  assert.equal(isUsableRpgWord({ meaning: 'fruit' }), false);
 });

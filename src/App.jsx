@@ -4,6 +4,7 @@ import TeacherLogin from './components/TeacherLogin';
 import SentenceBuilderQuestion from './components/SentenceBuilderQuestion';
 import VocabMazeMode from './games/VocabMazeMode';
 import VocabQuestRPG from './games/VocabQuestRPG';
+import { sampleRandomWords } from './games/rpg/rpgHelpers';
 import { assignQuizQuestionTypes, SENTENCE_BUILDER } from './quiz/sentenceBuilderHelpers';
 import { isSupabaseConfigured } from './lib/supabase';
 import { analyseDocxFile } from './services/docxImportService';
@@ -946,19 +947,69 @@ const normalizeAnswer = (text) => String(text || '')
             );
         }
 
-        function WordSelectionScreen({ words, folders = [], selectedFolderIds, onStart, onBack, title }) {
-            const selectedSet = useMemo(() => new Set(selectedFolderIds), [selectedFolderIds]);
-            const filtered = useMemo(() => getSelectedWordsForFolders(words, folders, selectedSet), [words, folders, selectedSet]);
-            const [selectedIds, setSelectedIds] = useState(() => new Set(filtered.map(w => w.id)));
+        function WordSelectionScreen({
+            words,
+            folders = [],
+            selectedFolderIds,
+            onStart,
+            onBack,
+            title,
+            randomSelection = null,
+        }) {
+            const selectedSet = useMemo(
+                () => new Set(selectedFolderIds),
+                [selectedFolderIds],
+            );
+            const filtered = useMemo(
+                () => getSelectedWordsForFolders(words, folders, selectedSet),
+                [words, folders, selectedSet],
+            );
+            const [selectedIds, setSelectedIds] = useState(
+                () => new Set(filtered.map(word => word.id)),
+            );
+            const [randomMenuOpen, setRandomMenuOpen] = useState(false);
+            const [randomFeedback, setRandomFeedback] = useState('');
 
             const toggle = (id) => {
                 const next = new Set(selectedIds);
                 if (next.has(id)) next.delete(id); else next.add(id);
                 setSelectedIds(next);
+                setRandomFeedback('');
             };
 
-            const handleSelectAll = () => setSelectedIds(new Set(filtered.map(w => w.id)));
-            const handleDeselectAll = () => setSelectedIds(new Set());
+            const handleSelectAll = () => {
+                setSelectedIds(new Set(filtered.map(word => word.id)));
+                setRandomMenuOpen(false);
+                setRandomFeedback('');
+            };
+
+            const handleDeselectAll = () => {
+                setSelectedIds(new Set());
+                setRandomMenuOpen(false);
+                setRandomFeedback('');
+            };
+
+            const handleRandomSelection = (count) => {
+                const eligible = randomSelection?.isEligible
+                    ? filtered.filter(randomSelection.isEligible)
+                    : filtered;
+                const sampled = sampleRandomWords(
+                    eligible,
+                    count,
+                    Math.random,
+                    selectedIds,
+                );
+                setSelectedIds(new Set(sampled.map(word => word.id)));
+                setRandomMenuOpen(false);
+                setRandomFeedback(`${sampled.length} words randomly selected`);
+            };
+
+            const selectedWordPool = randomSelection ? filtered : words;
+            const handleStart = () => {
+                onStart(
+                    selectedWordPool.filter(word => selectedIds.has(word.id)),
+                );
+            };
 
             return (
                 <div className="flex flex-col h-full bg-gray-50 overflow-hidden">
@@ -968,12 +1019,73 @@ const normalizeAnswer = (text) => String(text || '')
                             <div>
                                 <h2 className="text-xl md:text-2xl font-bold text-gray-800">{title}</h2>
                                 <p className="text-sm text-gray-500">{selectedFolderIds.length} folder(s) selected · {selectedIds.size} / {filtered.length} words</p>
+                                {randomFeedback && (
+                                    <p
+                                        aria-live="polite"
+                                        className="mt-1 text-sm font-semibold text-indigo-600"
+                                    >
+                                        {randomFeedback}
+                                    </p>
+                                )}
                             </div>
                         </div>
                         <div className="flex flex-wrap gap-2 items-center">
-                            <button onClick={handleSelectAll} className="px-4 py-2 bg-indigo-50 text-indigo-600 rounded-xl font-bold text-sm hover:bg-indigo-100 transition-colors">Select All</button>
-                            <button onClick={handleDeselectAll} className="px-4 py-2 bg-gray-100 text-gray-600 rounded-xl font-bold text-sm hover:bg-gray-200 transition-colors">Clear</button>
-                            <button onClick={() => onStart(words.filter(w => selectedIds.has(w.id)))} disabled={selectedIds.size === 0} className="px-6 py-2 bg-indigo-600 text-white rounded-xl font-bold disabled:opacity-50 hover:bg-indigo-700 transition-colors shadow-md ml-2 flex items-center gap-2">
+                            {randomSelection && (
+                                <div className="relative">
+                                    <button
+                                        type="button"
+                                        aria-haspopup="menu"
+                                        aria-expanded={randomMenuOpen}
+                                        onClick={() =>
+                                            setRandomMenuOpen(open => !open)
+                                        }
+                                        className="min-h-11 px-4 py-2 bg-indigo-50 text-indigo-600 rounded-xl font-bold text-sm hover:bg-indigo-100 transition-colors"
+                                    >
+                                        Random ▼
+                                    </button>
+                                    {randomMenuOpen && (
+                                        <div
+                                            role="menu"
+                                            className="absolute left-0 top-full z-30 mt-2 min-w-36 overflow-hidden rounded-xl border border-indigo-100 bg-white p-1 shadow-xl"
+                                        >
+                                            {randomSelection.counts.map(
+                                                count => (
+                                                    <button
+                                                        key={count}
+                                                        type="button"
+                                                        role="menuitem"
+                                                        onClick={() =>
+                                                            handleRandomSelection(
+                                                                count,
+                                                            )
+                                                        }
+                                                        className="block min-h-11 w-full rounded-lg px-4 py-2 text-left text-sm font-bold text-indigo-700 hover:bg-indigo-50"
+                                                    >
+                                                        Random {count}
+                                                    </button>
+                                                ),
+                                            )}
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+                            <button
+                                onClick={handleSelectAll}
+                                className={`${randomSelection ? 'min-h-11 ' : ''}px-4 py-2 bg-indigo-50 text-indigo-600 rounded-xl font-bold text-sm hover:bg-indigo-100 transition-colors`}
+                            >
+                                Select All
+                            </button>
+                            <button
+                                onClick={handleDeselectAll}
+                                className={`${randomSelection ? 'min-h-11 ' : ''}px-4 py-2 bg-gray-100 text-gray-600 rounded-xl font-bold text-sm hover:bg-gray-200 transition-colors`}
+                            >
+                                Clear
+                            </button>
+                            <button
+                                onClick={handleStart}
+                                disabled={selectedIds.size === 0}
+                                className={`px-6 py-2 bg-indigo-600 text-white rounded-xl font-bold disabled:opacity-50 hover:bg-indigo-700 transition-colors shadow-md flex items-center gap-2 ${randomSelection ? 'min-h-11 sm:ml-2' : 'ml-2'}`}
+                            >
                                 Start <ChevronRight size={18} />
                             </button>
                         </div>

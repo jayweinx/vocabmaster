@@ -7,6 +7,46 @@ export const RPG_OBSTACLES = [
   { x: 1080, y: 720, w: 280, h: 200 }, { x: 1510, y: 750, w: 160, h: 260 }
 ];
 
+export const isUsableRpgWord = (word) =>
+  Boolean(String(word?.word || '').trim()) &&
+  Boolean(
+    String(word?.meaning || '').trim() ||
+      String(word?.mandarin || '').trim(),
+  );
+
+export const sampleRandomWords = (
+  words = [],
+  requestedCount,
+  random = Math.random,
+  previousIds = null,
+) => {
+  const uniqueWords = Array.from(
+    new Map(words.map((word) => [word.id, word])).values(),
+  );
+  const shuffled = [...uniqueWords];
+  for (let index = shuffled.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.min(index, Math.floor(random() * (index + 1)));
+    [shuffled[index], shuffled[swapIndex]] = [
+      shuffled[swapIndex],
+      shuffled[index],
+    ];
+  }
+  const count = Math.min(
+    shuffled.length,
+    Math.max(0, Math.floor(Number(requestedCount) || 0)),
+  );
+  const sampled = shuffled.slice(0, count);
+  const repeatedSelection =
+    sampled.length > 0 &&
+    previousIds &&
+    previousIds.size === sampled.length &&
+    sampled.every((word) => previousIds.has(word.id));
+  if (repeatedSelection && shuffled.length > sampled.length) {
+    sampled[sampled.length - 1] = shuffled[sampled.length];
+  }
+  return sampled;
+};
+
 export const normalizeMovement = (x, y, speed) => {
   const length = Math.hypot(x, y);
   return length ? { x: (x / length) * speed, y: (y / length) * speed } : { x: 0, y: 0 };

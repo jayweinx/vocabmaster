@@ -1,10 +1,27 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import SentenceBuilderQuestion from '../components/SentenceBuilderQuestion';
 import { getSentenceBuilderMeaningLines, isSentenceBuilderEligible } from '../quiz/sentenceBuilderHelpers';
-import { RPG_OBSTACLES, RPG_WORLD, cameraFor, correctAnswerText, createRpgResult, isBossUnlocked, movePlayer, nextRpgStats, rpgQuestionMode, selectDistinctMeaningWords, shouldOfferRetry } from './rpg/rpgHelpers';
+import {
+  RPG_OBSTACLES,
+  RPG_WORLD,
+  cameraFor,
+  correctAnswerText,
+  createRpgResult,
+  isBossUnlocked,
+  isUsableRpgWord,
+  movePlayer,
+  nextRpgStats,
+  rpgQuestionMode,
+  selectDistinctMeaningWords,
+  shouldOfferRetry,
+} from './rpg/rpgHelpers';
 
 const positions = [[550, 390], [1020, 410], [1480, 520], [620, 650], [900, 690], [1450, 960], [940, 1010], [250, 570], [1640, 560], [520, 1040], [1150, 530], [1320, 650]];
 const shuffle = (items) => [...items].sort(() => Math.random() - 0.5);
+const VOCAB_QUEST_RANDOM_SELECTION = {
+  counts: [10, 15, 20],
+  isEligible: isUsableRpgWord,
+};
 const play = (text) => { if (window.speechSynthesis && text) { window.speechSynthesis.cancel(); const u = new SpeechSynthesisUtterance(text); u.lang = 'en-US'; window.speechSynthesis.speak(u); } };
 
 function VirtualJoystick({ onInput }) {
@@ -43,7 +60,7 @@ export default function VocabQuestRPG({ words, folders, username, setIsDirty, on
   const [player, setPlayer] = useState({ x: 500, y: 560 }); const [input, setInput] = useState({ x: 0, y: 0 }); const [viewport, setViewport] = useState({ width: 800, height: 560 });
   const [encounters, setEncounters] = useState([]); const [challenge, setChallenge] = useState(null); const [stats, setStats] = useState({ score: 0, coins: 0, hearts: 3, correct: 0, wrong: 0, recovered: 0, combo: 0, bestCombo: 0, encounters: 0 }); const [finalStats, setFinalStats] = useState(null); const [startedAt, setStartedAt] = useState(Date.now()); const [notice, setNotice] = useState(''); const areaRef = useRef(null); const keys = useRef(new Set()); const interactRef = useRef(() => {});
   const normal = encounters.filter((item) => !item.special); const specials = encounters.filter((item) => item.special); const bossUnlocked = isBossUnlocked({ normalCleared: normal.filter((i) => i.cleared).length, normalTotal: normal.length, specialsCleared: specials.filter((i) => i.cleared).length, specialsTotal: specials.length });
-  const usable = (items) => items.filter((word) => String(word.word || '').trim() && (String(word.meaning || '').trim() || String(word.mandarin || '').trim()));
+  const usable = (items) => items.filter(isUsableRpgWord);
   useEffect(() => { if (setIsDirty) setIsDirty(phase === 'playing'); }, [phase, setIsDirty]);
   useEffect(() => { if (!notice) return undefined; const timer = setTimeout(() => setNotice(''), 2200); return () => clearTimeout(timer); }, [notice]);
   useEffect(() => { const resize = () => { const b = areaRef.current?.getBoundingClientRect(); if (b) setViewport({ width: b.width, height: b.height }); }; resize(); window.addEventListener('resize', resize); return () => window.removeEventListener('resize', resize); }, [phase]);
@@ -57,7 +74,34 @@ export default function VocabQuestRPG({ words, folders, username, setIsDirty, on
   interactRef.current = interact;
   const onChallengeDone = (correct) => { const current = challenge; const nextStats = nextRpgStats(stats, { correct, recovered: Boolean(current.retry), special: current.special, boss: current.boss }); setStats(nextStats); if (current.boss) { if (!correct) { if (nextStats.hearts === 0) { setFinalStats(nextStats); setChallenge(null); setPhase('gameover'); } else setChallenge({ ...current, attempt: (current.attempt || 0) + 1 }); return; } if (current.bossIndex < 2) { const nextWord = selectedWords[(current.bossIndex + 1) % selectedWords.length]; setChallenge({ ...current, word: nextWord, bossIndex: current.bossIndex + 1, mode: rpgQuestionMode(nextWord, current.bossIndex + 1), attempt: 0 }); return; } setFinalStats(nextStats); setChallenge(null); setPhase('result'); return; } const recovered = Boolean(current.retry); const becomesUnlocked = !bossUnlocked && isBossUnlocked({ normalCleared: normal.filter((item) => item.cleared || item.id === current.id).length, normalTotal: normal.length, specialsCleared: specials.filter((item) => item.cleared || item.id === current.id).length, specialsTotal: specials.length }); setEncounters((items) => items.map((item) => item.id !== current.id ? item : correct ? { ...item, cleared: true, retry: null } : { ...item, retry: { availableAfter: stats.encounters + 3 } })); setChallenge(null); if (!correct && nextStats.hearts === 0) { setFinalStats(nextStats); setPhase('gameover'); } if (correct && recovered) setNotice('Recovered! +60'); else if (correct && becomesUnlocked) setNotice('BOSS UNLOCKED!'); };
   if (phase === 'category') return <div className="min-h-full"><div className="p-4"><button onClick={onBackToGames} className="font-bold text-indigo-600">← Back to Games</button></div><CategorySelectionScreen words={words} folders={folders} title="Vocab Quest: Category" onSelect={(ids) => { setFolderIds(ids); setPhase('setup'); }} /></div>;
-  if (phase === 'setup') return <div className="min-h-full"><div className="p-4"><button onClick={onBackToGames} className="font-bold text-indigo-600">← Back to Games</button>{error && <p className="mt-3 rounded-xl bg-red-50 p-3 font-bold text-red-600">{error}</p>}</div><WordSelectionScreen words={words} folders={folders} selectedFolderIds={folderIds} title="Choose 10–20 words for Vocab Quest" onBack={() => setPhase('category')} onStart={begin} /></div>;
+  if (phase === 'setup') {
+    return (
+      <div className="min-h-full">
+        <div className="p-4">
+          <button
+            onClick={onBackToGames}
+            className="font-bold text-indigo-600"
+          >
+            ← Back to Games
+          </button>
+          {error && (
+            <p className="mt-3 rounded-xl bg-red-50 p-3 font-bold text-red-600">
+              {error}
+            </p>
+          )}
+        </div>
+        <WordSelectionScreen
+          words={words}
+          folders={folders}
+          selectedFolderIds={folderIds}
+          title="Choose 10–20 words for Vocab Quest"
+          randomSelection={VOCAB_QUEST_RANDOM_SELECTION}
+          onBack={() => setPhase('category')}
+          onStart={begin}
+        />
+      </div>
+    );
+  }
   if (phase === 'result' || phase === 'gameover') { const result = createRpgResult({ username, folderId: folderIds[0], selectedWords, stats: finalStats || stats, startedAt }); return <div className="min-h-full p-6 text-center"><div className="mx-auto max-w-lg rounded-3xl bg-white p-8 shadow-xl"><h2 className="text-3xl font-black">{phase === 'result' ? '🏆 LEVEL COMPLETE' : '💔 GAME OVER'}</h2><p className="mt-3 font-bold">Student: {result.student}</p><p className="mt-5 text-xl">Score: {result.score} · Accuracy: {result.accuracy}%</p><p className="mt-2">Correct {result.correct} · Recovered {result.recovered} · Best Combo {result.bestCombo} · Coins {result.coins}</p><p className="mt-2">Time: {Math.floor(result.timeSeconds / 60)}:{String(result.timeSeconds % 60).padStart(2, '0')}</p><div className="mt-6 grid gap-3"><button onClick={() => begin(selectedWords)} className="rounded-xl bg-indigo-600 p-3 font-black text-white">{phase === 'result' ? 'Play Again' : 'Retry Level'}</button><button onClick={() => setPhase('setup')} className="rounded-xl bg-indigo-100 p-3 font-black text-indigo-700">Change Words</button><button onClick={onBackToGames} className="rounded-xl border p-3 font-black">← Back to Games</button></div></div></div>; }
   const camera = cameraFor(player, viewport);
   return <div ref={areaRef} className="relative h-full min-h-[520px] overflow-hidden bg-emerald-700 touch-none"><div className="absolute inset-0" style={{ transform: `translate(${-camera.x}px, ${-camera.y}px)`, width: RPG_WORLD.width, height: RPG_WORLD.height, backgroundImage: 'radial-gradient(#86efac 1px, transparent 1px)', backgroundSize: '24px 24px' }}><div className="absolute left-[400px] top-0 h-full w-48 bg-amber-200/70" /><div className="absolute left-0 top-[520px] h-32 w-full bg-amber-200/70" />{RPG_OBSTACLES.map((box, i) => <div key={i} className="absolute rounded-2xl border-4 border-emerald-900 bg-amber-700 shadow-lg" style={{ left: box.x, top: box.y, width: box.w, height: box.h }}>{i < 3 ? '🏠' : '🌲🌲'}</div>)}{!bossUnlocked && <div className="absolute bg-stone-600" style={{ left: 1570, top: 850, width: 230, height: 45 }}>🔒 Gate</div>}{encounters.map((item, i) => <div key={item.id} className="absolute grid h-12 w-12 place-items-center rounded-full text-3xl" style={{ left: item.x - 24, top: item.y - 24 }}>{item.cleared ? '✓' : item.special ? (item.mode === 'MATCH' ? '🎁' : '🧚') : ['👩','🧙','👨','👾'][i % 4]}</div>)}<div className="absolute grid h-20 w-20 place-items-center rounded-full border-4 border-yellow-400 bg-purple-700 text-4xl" style={{ left: 1670, top: 940 }}>{bossUnlocked ? '👑' : '🔒'}</div><div className="absolute grid h-11 w-11 place-items-center rounded-full bg-indigo-600 text-2xl shadow-xl" style={{ left: player.x - 22, top: player.y - 22 }}>🧑‍🚀</div></div><div className="absolute left-3 right-3 top-3 z-20 flex flex-wrap justify-between gap-2 rounded-xl bg-slate-950/70 px-3 py-2 text-xs font-black text-white"><span>❤️ {stats.hearts}</span><span>⭐ {stats.score}</span><span>🪙 {stats.coins}</span><span>🔥 {stats.combo}</span><span>📚 {normal.filter((i) => i.cleared).length}/{normal.length}</span></div>{nearest && <button onClick={interact} className="absolute bottom-5 right-4 z-20 rounded-2xl bg-white px-5 py-4 font-black text-indigo-700 shadow-xl">{nearest.special ? 'CHALLENGE' : 'TALK'} · E</button>} {bossNear && !nearest && <button onClick={interact} className="absolute bottom-5 right-4 z-20 rounded-2xl bg-yellow-300 px-5 py-4 font-black">BOSS · E</button>}<VirtualJoystick onInput={setInput}/>{notice && <p className="absolute left-1/2 top-16 z-30 -translate-x-1/2 rounded-full bg-yellow-300 px-4 py-2 font-black">{notice}</p>}{challenge && <ChallengeModal key={`${challenge.id}-${challenge.bossIndex || 0}-${challenge.attempt || 0}`} challenge={challenge} words={selectedWords} onDone={onChallengeDone}/>}</div>;
